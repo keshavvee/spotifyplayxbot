@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import urllib.parse
 from typing import Union
 import yt_dlp
 from pyrogram.enums import MessageEntityType
@@ -76,6 +77,28 @@ async def _download_media(link: str, kind: str, timeout: int) -> str:
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path
 
+    base = (API_URL or "").strip().rstrip("/")
+    key = (API_KEY or "").strip()
+    if "riteshyt" in base and key and key != "YOUR_API_KEY":
+        ext = "mp3" if is_audio else "mp4"
+        direct = f"{base}/downloads/{key}/{video_id}.{ext}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    direct, timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as resp:
+                    if resp.status == 200:
+                        if external:
+                            found = _find_external(external, video_id, extensions, resp)
+                            if found:
+                                return found
+                        with open(file_path, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(131072):
+                                f.write(chunk)
+                        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                            return file_path
+        except Exception:
+            pass
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -189,18 +212,59 @@ class YouTubeAPI:
                         return entity.url
         return None
 
+    async def _api_search(self, query: str, limit: int = 1):
+        base = (API_URL or "").strip().rstrip("/")
+        key = (API_KEY or "").strip()
+        if not base or not key or key == "YOUR_API_KEY":
+            return []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{base}/search",
+                    params={"q": query, "limit": limit, "api_key": key},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        return []
+                    payload = await resp.json()
+                    return payload.get("result") or []
+        except Exception:
+            return []
+
+    def _api_item_to_result(self, item):
+        thumbnails = item.get("thumbnails") or [{}]
+        channel = item.get("channel") or {}
+        return {
+            "title": item.get("title") or "Unknown",
+            "duration": item.get("duration") or "0:00",
+            "id": item.get("id") or "",
+            "link": item.get("link") or "",
+            "thumbnails": thumbnails,
+            "channel": channel,
+        }
+
+    async def _search_one(self, query: str):
+        items = await self._api_search(query, 1)
+        if items:
+            return self._api_item_to_result(items[0])
+        results = VideosSearch(query, limit=1)
+        for result in (await results.next())["result"]:
+            return result
+        return None
+
     async def details(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
-        results = VideosSearch(link, limit=1)
-        for result in (await results.next())["result"]:
-            title = result["title"]
-            duration_min = result["duration"]
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-            vidid = result["id"]
-            duration_sec = int(time_to_seconds(duration_min)) if duration_min else 0
+        result = await self._search_one(link)
+        if not result:
+            raise Exception("no search results")
+        title = result["title"]
+        duration_min = result["duration"]
+        thumbnail = result["thumbnails"][0]["url"].split("?")[0]
+        vidid = result["id"]
+        duration_sec = int(time_to_seconds(duration_min)) if duration_min else 0
         return title, duration_min, duration_sec, thumbnail, vidid
 
     async def title(self, link: str, videoid: Union[bool, str] = None):
@@ -208,27 +272,24 @@ class YouTubeAPI:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
-        results = VideosSearch(link, limit=1)
-        for result in (await results.next())["result"]:
-            return result["title"]
+        result = await self._search_one(link)
+        return result["title"] if result else None
 
     async def duration(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
-        results = VideosSearch(link, limit=1)
-        for result in (await results.next())["result"]:
-            return result["duration"]
+        result = await self._search_one(link)
+        return result["duration"] if result else None
 
     async def thumbnail(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
-        results = VideosSearch(link, limit=1)
-        for result in (await results.next())["result"]:
-            return result["thumbnails"][0]["url"].split("?")[0]
+        result = await self._search_one(link)
+        return result["thumbnails"][0]["url"].split("?")[0] if result else None
 
     async def video(self, link: str, videoid: Union[bool, str] = None):
         if videoid:
@@ -268,13 +329,14 @@ class YouTubeAPI:
             link = self.base + link
         if "&" in link:
             link = link.split("&")[0]
-        results = VideosSearch(link, limit=1)
-        for result in (await results.next())["result"]:
-            title = result["title"]
-            duration_min = result["duration"]
-            vidid = result["id"]
-            yturl = result["link"]
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
+        result = await self._search_one(link)
+        if not result:
+            raise Exception("no search results")
+        title = result["title"]
+        duration_min = result["duration"]
+        vidid = result["id"]
+        yturl = result["link"]
+        thumbnail = result["thumbnails"][0]["url"].split("?")[0]
         track_details = {
             "title": title,
             "link": yturl,

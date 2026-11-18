@@ -12,7 +12,8 @@ kurigram>=2.2.26
 motor
 pillow
 psutil
-py-tgcalls==0.9.7
+py-tgcalls==1.1.6
+ntgcalls==1.1.2
 pykeyboard
 python-dotenv
 pyyaml
@@ -26,3 +27,5 @@ yt-dlp
 youtube-search
 youtube-search-python
 py-yt-search
+
+six
