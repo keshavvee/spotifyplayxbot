@@ -1,78 +1,59 @@
-import random
-
+import config
 from pyrogram.enums import ButtonStyle
 from pyrogram.types import InlineKeyboardButton
 
-import config
 from ShrutixMusic import nand
 
-COLORS = (ButtonStyle.PRIMARY, ButtonStyle.SUCCESS, ButtonStyle.DANGER)
+GROUP_ADD = "https://t.me/{username}?startgroup=true&admin=invite_users+delete_messages+manage_video_chats+pin_messages+manage_chat+ban_users+manage_topics+change_info"
 
 
-def _random_styles(count, blanks):
-    blank_at = set(random.sample(range(count), blanks))
-    colored = [i for i in range(count) if i not in blank_at]
-    while True:
-        picks = {i: random.choice(COLORS) for i in colored}
-        if len(colored) < 3 or len(set(picks.values())) > 1:
-            break
-    return [picks.get(i, ButtonStyle.DEFAULT) for i in range(count)]
+def _add_url():
+    return GROUP_ADD.format(username=nand.username)
 
 
 def start_panel(_):
-    s = _random_styles(2, random.choice((0, 1)))
-    buttons = [
+    return [
         [
             InlineKeyboardButton(
                 text=_["S_B_1"],
-                url=f"https://t.me/{nand.username}?startgroup=true",
-                style=s[0],
+                url=_add_url(),
+                style=ButtonStyle.PRIMARY,
             ),
             InlineKeyboardButton(
                 text=_["S_B_2"],
                 url=config.SUPPORT_CHAT,
-                style=s[1],
+                style=ButtonStyle.PRIMARY,
             ),
         ],
     ]
-    return buttons
 
 
 def private_panel(_):
-    s = _random_styles(5, random.choice((0, 1, 1, 2, 2)))
-    buttons = [
+    return [
         [
             InlineKeyboardButton(
                 text=_["S_B_3"],
-                url=f"https://t.me/{nand.username}?startgroup=true",
-                style=s[0],
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text=_["S_B_4"],
-                callback_data="settings_back_helper",
-                style=s[1],
+                url=_add_url(),
+                style=ButtonStyle.PRIMARY,
             )
         ],
         [
             InlineKeyboardButton(
                 text=_["S_B_6"],
-                url=config.SUPPORT_CHANNEL,
-                style=s[2],
+                user_id=config.OWNER_ID,
+                style=ButtonStyle.DANGER,
             ),
             InlineKeyboardButton(
-                text=_["S_B_2"],
-                url=config.SUPPORT_CHAT,
-                style=s[3],
+                text=_["S_B_5"],
+                url=config.SUPPORT_CHANNEL,
+                style=ButtonStyle.SUCCESS,
             ),
         ],
         [
             InlineKeyboardButton(
-                text=_["S_B_5"],
-                user_id=config.OWNER_ID,
-                style=s[4],
-            ),
+                text=_["S_B_4"],
+                callback_data="settings_back_helper",
+                style=ButtonStyle.SUCCESS,
+            )
         ],
     ]
-    return buttons

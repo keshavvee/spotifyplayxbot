@@ -1,5 +1,7 @@
 import asyncio
+import glob
 import os
+import time
 import re
 import urllib.parse
 from typing import Union
@@ -14,6 +16,18 @@ API_URL = os.environ.get("SHRUTI_API_URL", "https://api.shrutibots.in")
 API_KEY = os.environ.get("SHRUTI_API_KEY", "YOUR_API_KEY") ## Get This API KEY FROM https://dash.shrutibots.in
 
 DOWNLOAD_DIR = "downloads"
+
+_DOWNLOAD_GATE = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3")))
+_PROVIDER_TEST_ID = os.getenv("PROVIDER_TEST_VIDEO_ID", "BddP6PYo2gs")
+_PROVIDER_RETEST_SECONDS = int(os.getenv("PROVIDER_RETEST_SECONDS", "900"))
+_PROVIDER_COOLDOWN_SECONDS = int(os.getenv("PROVIDER_COOLDOWN_SECONDS", "300"))
+_PROVIDER_DEFAULT_ORDER = {"audio": ["api", "ytdlp"], "video": ["ytdlp", "api"]}
+_PROVIDER_STATS = {
+    "audio": {"api": {"ewma": None, "fails": 0, "until": 0.0}, "ytdlp": {"ewma": None, "fails": 0, "until": 0.0}},
+    "video": {"ytdlp": {"ewma": None, "fails": 0, "until": 0.0}, "api": {"ewma": None, "fails": 0, "until": 0.0}},
+}
+_PROVIDER_LOCK = asyncio.Lock()
+_PROVIDER_MONITOR_TASK = None
 
 
 def _env_dir(name: str) -> str:
@@ -59,6 +73,11 @@ def time_to_seconds(time):
 
 
 async def _download_media(link: str, kind: str, timeout: int) -> str:
+    async with _DOWNLOAD_GATE:
+        return await _download_media_inner(link, kind, timeout)
+
+
+async def _download_media_inner(link: str, kind: str, timeout: int) -> str:
     video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
     if not video_id or len(video_id) < 3:
         return None
@@ -79,33 +98,32 @@ async def _download_media(link: str, kind: str, timeout: int) -> str:
 
     base = (API_URL or "").strip().rstrip("/")
     key = (API_KEY or "").strip()
-    if "riteshyt" in base and key and key != "YOUR_API_KEY":
-        ext = "mp3" if is_audio else "mp4"
-        direct = f"{base}/downloads/{key}/{video_id}.{ext}"
+    api_ready = bool("riteshyt" in base and key and key != "YOUR_API_KEY")
+    order = _provider_order(kind, api_ready)
+    for provider in order:
+        started = time.monotonic()
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    direct, timeout=aiohttp.ClientTimeout(total=timeout)
-                ) as resp:
-                    if resp.status == 200:
-                        if external:
-                            found = _find_external(external, video_id, extensions, resp)
-                            if found:
-                                return found
-                        with open(file_path, "wb") as f:
-                            async for chunk in resp.content.iter_chunked(131072):
-                                f.write(chunk)
-                        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                            return file_path
+            if provider == "api":
+                result = await _download_api(video_id, kind, timeout, file_path, external, extensions, base, key)
+            else:
+                result = await _ytdlp_fallback(video_id, kind, timeout)
         except Exception:
-            pass
+            result = None
+        if result:
+            await _record_provider(kind, provider, True, time.monotonic() - started)
+            return result
+        await _record_provider(kind, provider, False, time.monotonic() - started)
+    return None
+
+
+async def _download_api(video_id, kind, timeout, file_path, external, extensions, base, key):
+    if not ("riteshyt" in base and key and key != "YOUR_API_KEY"):
+        return None
+    ext = "mp3" if kind == "audio" else "mp4"
+    direct = f"{base}/downloads/{key}/{video_id}.{ext}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{API_URL}/download",
-                params={"url": video_id, "type": kind, "api_key": API_KEY},
-                timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as resp:
+            async with session.get(direct, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 if resp.status != 200:
                     return None
                 if external:
@@ -117,14 +135,172 @@ async def _download_media(link: str, kind: str, timeout: int) -> str:
                         f.write(chunk)
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             return file_path
-        return None
     except Exception:
+        pass
+    try:
         if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
+            os.remove(file_path)
+    except Exception:
+        pass
+    return None
+
+
+def _provider_order(kind, api_ready=False):
+    now = time.monotonic()
+    stats = _PROVIDER_STATS[kind]
+    names = list(_PROVIDER_DEFAULT_ORDER[kind])
+    if not api_ready and "api" in names:
+        names.remove("api")
+    def key(name):
+        st = stats[name]
+        cooling = 1 if st["until"] > now else 0
+        default_score = 3.0 if name == _PROVIDER_DEFAULT_ORDER[kind][0] else 5.0
+        score = default_score if kind == "video" else (st["ewma"] if st["ewma"] is not None else default_score)
+        return (cooling, score + min(st["fails"], 5) * 2)
+    return sorted(names, key=key)
+
+
+async def _record_provider(kind, provider, ok, seconds):
+    async with _PROVIDER_LOCK:
+        st = _PROVIDER_STATS[kind][provider]
+        if ok:
+            st["ewma"] = seconds if st["ewma"] is None else (st["ewma"] * 0.7 + seconds * 0.3)
+            st["fails"] = 0
+            st["until"] = 0.0
+        else:
+            st["fails"] += 1
+            if st["fails"] >= 2:
+                st["until"] = time.monotonic() + _PROVIDER_COOLDOWN_SECONDS
+
+
+async def _probe_api(kind, timeout=30):
+    base = (API_URL or "").strip().rstrip("/")
+    key = (API_KEY or "").strip()
+    if not ("riteshyt" in base and key and key != "YOUR_API_KEY"):
         return None
+    ext = "mp3" if kind == "audio" else "mp4"
+    started = time.monotonic()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{base}/downloads/{key}/{_PROVIDER_TEST_ID}.{ext}",
+                headers={"Range": "bytes=0-65535"},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                data = await resp.content.read(65536)
+                if resp.status in (200, 206) and data:
+                    return time.monotonic() - started
+    except Exception:
+        pass
+    return None
+
+
+def _probe_ytdlp_sync(kind, timeout=30):
+    fmt = "bestaudio[ext=m4a]/bestaudio/best" if kind == "audio" else "bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+    started = time.monotonic()
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True, "format": fmt}) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={_PROVIDER_TEST_ID}", download=False)
+        if not info or not info.get("url"):
+            return None
+        return time.monotonic() - started
+    except Exception:
+        return None
+
+
+async def _probe_provider(kind, provider):
+    if provider == "api":
+        return await _probe_api(kind)
+    return await asyncio.to_thread(_probe_ytdlp_sync, kind)
+
+
+def provider_snapshot():
+    now = time.monotonic()
+    result = {}
+    for kind in ("audio", "video"):
+        rows = []
+        for name in _PROVIDER_DEFAULT_ORDER[kind]:
+            stats = _PROVIDER_STATS[kind][name]
+            rows.append(
+                {
+                    "name": name,
+                    "ewma": stats["ewma"],
+                    "fails": stats["fails"],
+                    "until": stats["until"],
+                    "cooling": max(0.0, stats["until"] - now),
+                }
+            )
+        result[kind] = rows
+    return result
+
+
+def set_provider_order(kind, first):
+    if kind not in _PROVIDER_DEFAULT_ORDER:
+        raise ValueError("unknown media kind")
+    if first not in _PROVIDER_DEFAULT_ORDER[kind]:
+        raise ValueError("unknown provider")
+    _PROVIDER_DEFAULT_ORDER[kind] = [first] + [
+        name for name in _PROVIDER_DEFAULT_ORDER[kind] if name != first
+    ]
+    return list(_PROVIDER_DEFAULT_ORDER[kind])
+
+
+async def test_providers():
+    results = {"audio": {}, "video": {}}
+    for kind in ("audio", "video"):
+        for provider in ("api", "ytdlp"):
+            result = await _probe_provider(kind, provider)
+            await _record_provider(kind, provider, result is not None, result or 0.0)
+            results[kind][provider] = result
+    return results
+
+
+async def _provider_monitor():
+    while True:
+        await asyncio.sleep(_PROVIDER_RETEST_SECONDS)
+        for kind in ("audio", "video"):
+            for provider in _PROVIDER_DEFAULT_ORDER[kind]:
+                result = await _probe_provider(kind, provider)
+                await _record_provider(kind, provider, result is not None, result or 0.0)
+
+
+async def start_provider_monitor():
+    global _PROVIDER_MONITOR_TASK
+    if _PROVIDER_MONITOR_TASK is None or _PROVIDER_MONITOR_TASK.done():
+        _PROVIDER_MONITOR_TASK = asyncio.create_task(_provider_monitor())
+    return _PROVIDER_MONITOR_TASK
+
+
+async def _ytdlp_fallback(video_id: str, kind: str, timeout: int):
+    return await asyncio.to_thread(_ytdlp_fallback_sync, video_id, kind, timeout)
+
+
+def _ytdlp_fallback_sync(video_id: str, kind: str, timeout: int):
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    pattern = os.path.join(DOWNLOAD_DIR, f"{video_id}.*")
+    existing = [p for p in glob.glob(pattern) if os.path.getsize(p) > 0]
+    if existing:
+        return existing[0]
+    is_audio = kind == "audio"
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": timeout,
+        "retries": 2,
+        "outtmpl": os.path.join(DOWNLOAD_DIR, f"{video_id}.%(ext)s"),
+        "format": "bestaudio[ext=m4a]/bestaudio/best" if is_audio else "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+    }
+    cookie_file = os.getenv("YTDLP_COOKIEFILE") or os.getenv("COOKIES_FILE")
+    if cookie_file and os.path.isfile(cookie_file):
+        opts["cookiefile"] = cookie_file
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+    except Exception:
+        return None
+    found = [p for p in glob.glob(pattern) if os.path.getsize(p) > 0]
+    return found[0] if found else None
 
 
 async def download_song(link: str) -> str:

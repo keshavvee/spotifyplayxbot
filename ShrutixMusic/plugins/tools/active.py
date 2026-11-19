@@ -1,9 +1,8 @@
 import asyncio
 import time
 
-from pyrogram import filters, types
-from pyrogram.enums import ButtonStyle
-from pyrogram.types import Message
+from pyrogram import filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from unidecode import unidecode
 
 from ShrutixMusic import nand
@@ -15,7 +14,6 @@ from ShrutixMusic.utils.database import (
     remove_active_chat,
     remove_active_video_chat,
 )
-from ShrutixMusic.utils.rich_stream import caption_blocks, edit_rich
 from strings import get_string
 
 FETCH_CONCURRENCY = 15
@@ -67,21 +65,6 @@ def _build_caption(_, kind_label, chats, elapsed):
     return _["ACTIVE_LIST"].format(kind_label, len(chats), nand.mention, body, elapsed)
 
 
-def _button(_, key, data, style):
-    return types.RichMessageButton(text=_[key], style=style, callback_data=data)
-
-
-def _controls(_, kind):
-    return [
-        types.InputRichBlockButtons(
-            buttons=[
-                _button(_, "ACTIVE_BTN_REFRESH", f"ACTIVE r|{kind}", ButtonStyle.SUCCESS),
-                _button(_, "ACTIVE_BTN_CLOSE", "ACTIVE x", ButtonStyle.DANGER),
-            ]
-        )
-    ]
-
-
 async def _fetch(kind):
     if kind == "vc":
         chat_ids = await get_active_chats()
@@ -98,8 +81,22 @@ async def _render(_, kind, message):
     chats = await _fetch(kind)
     elapsed = round(time.monotonic() - started, 2)
     caption = _build_caption(_, label, chats, elapsed)
-    blocks = caption_blocks(caption) + _controls(_, kind)
-    return await edit_rich(message, blocks)
+    markup = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(_["ACTIVE_BTN_REFRESH"], callback_data=f"ACTIVE r|{kind}"),
+                InlineKeyboardButton(_["ACTIVE_BTN_CLOSE"], callback_data="ACTIVE x"),
+            ]
+        ]
+    )
+    try:
+        return await message.edit_text(
+            caption,
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        return await message.edit_text(caption, reply_markup=markup)
 
 
 async def _launch(message: Message, kind):
