@@ -10,7 +10,7 @@ from pyrogram import filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import config
-from ShrutixMusic import nand
+from ShrutixMusic import nand, userbot
 from ShrutixMusic.core.call import Shruti
 from ShrutixMusic.core.userbot import assistants
 from ShrutixMusic.misc import _boot_, mongodb
@@ -67,7 +67,8 @@ async def owner_health(_, message: Message):
         checks.append(f"Database: OK ({round((time.perf_counter() - started) * 1000, 1)} ms)")
     except Exception as exc:
         checks.append(f"Database: FAIL ({_esc(type(exc).__name__)})")
-    connected = sum(1 for item in assistants if getattr(item, "is_connected", False))
+    slots = (userbot.one, userbot.two, userbot.three, userbot.four, userbot.five)
+    connected = sum(1 for item in slots if getattr(item, "is_connected", False))
     checks.append(f"Assistants: {connected}/{len(assistants)} connected")
     try:
         checks.append(f"PyTgCalls: {await Shruti.ping()} ms")
@@ -114,7 +115,7 @@ async def owner_globalstats(_, message: Message):
         pass
     text = (
         "<b>🌐 GLOBAL STATS</b>\n\n"
-        f"• Bot: {_esc(nand.mention)}\n"
+        f"• Bot: {nand.mention}\n"
         f"• Uptime: {uptime}\n"
         f"• Users: <code>{served_users}</code>\n"
         f"• Chats: <code>{served_chats}</code>\n"
