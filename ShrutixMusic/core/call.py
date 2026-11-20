@@ -13,7 +13,6 @@ from pytgcalls import PyTgCalls, StreamType
 from pytgcalls.exceptions import (
     AlreadyJoinedError,
     NoActiveGroupCall,
-    TelegramServerError,
 )
 from pytgcalls.types import Update
 from pytgcalls.types.input_stream import AudioPiped, AudioVideoPiped
@@ -222,7 +221,13 @@ class Call(PyTgCalls):
             raise AssistantErr(_["call_8"])
         except AlreadyJoinedError:
             raise AssistantErr(_["call_9"])
-        except TelegramServerError:
+        except Exception as exc:
+            LOGGER(__name__).warning(
+                "assistant join failed in %s: %s: %s",
+                chat_id,
+                type(exc).__name__,
+                exc,
+            )
             raise AssistantErr(_["call_10"])
         await self._set_vc_title(assistant, chat_id)
 

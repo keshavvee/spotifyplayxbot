@@ -6,18 +6,19 @@ import queue
 import threading
 import traceback
 
+from pyrogram import idle
+from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
+
+import config
+from ShrutixMusic import LOGGER, nand, userbot
+
 try:
     asyncio.get_event_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-from pyrogram import idle
-from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait
 from pytgcalls.exceptions import NoActiveGroupCall
-
-import config
-from ShrutixMusic import LOGGER, nand, userbot
 from ShrutixMusic.core.call import Shruti
 from ShrutixMusic.logging import enqueue_error
 from ShrutixMusic.misc import sudo
