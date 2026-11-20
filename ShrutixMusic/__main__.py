@@ -6,6 +6,11 @@ import queue
 import threading
 import traceback
 
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from pyrogram import idle
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
