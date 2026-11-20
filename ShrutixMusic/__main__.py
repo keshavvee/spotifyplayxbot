@@ -99,6 +99,21 @@ async def _start_error_forwarder():
     return asyncio.create_task(_error_forwarder())
 
 
+async def _start_with_flood_wait(client, label):
+    while True:
+        try:
+            await client.start()
+            return
+        except FloodWait as exc:
+            wait_for = max(int(exc.value), 30) + 15
+            LOGGER(__name__).warning(
+                "%s authorization flood wait; retrying in %ss",
+                label,
+                wait_for,
+            )
+            await asyncio.sleep(wait_for)
+
+
 async def init():
     if (
         not config.STRING1
@@ -119,12 +134,12 @@ async def init():
             BANNED_USERS.add(user_id)
     except:
         pass
-    await nand.start()
+    await _start_with_flood_wait(nand, "bot")
     await _start_error_forwarder()
     for all_module in ALL_MODULES:
         importlib.import_module("ShrutixMusic.plugins" + all_module)
     LOGGER("ShrutixMusic.plugins").info("Successfully Imported Modules...")
-    await userbot.start()
+    await _start_with_flood_wait(userbot, "assistant")
     await Shruti.start()
     try:
         await Shruti.stream_call("https://te.legra.ph/file/29f784eb49d230ab62e9e.mp4")
