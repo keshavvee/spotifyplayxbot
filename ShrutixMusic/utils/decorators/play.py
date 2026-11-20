@@ -1,13 +1,13 @@
 import asyncio
 
-from pyrogram.enums import ChatMemberStatus, ChatPrivileges, ChatType
+from pyrogram.enums import ChatMemberStatus, ChatType
 from pyrogram.errors import (
     ChatAdminRequired,
     InviteRequestSent,
     UserAlreadyParticipant,
     UserNotParticipant,
 )
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import ChatPrivileges, InlineKeyboardButton, InlineKeyboardMarkup
 
 from ShrutixMusic import YouTube, nand
 from ShrutixMusic.misc import SUDOERS
