@@ -92,6 +92,7 @@ async def _start_error_forwarder():
 
     def _on_sys_error(exc_type, exc, tb):
         enqueue_error("SYSTEM", "".join(traceback.format_exception(exc_type, exc, tb)))
+        sys.__excepthook__(exc_type, exc, tb)
 
     loop.set_exception_handler(_on_loop_error)
     threading.excepthook = _on_thread_error
