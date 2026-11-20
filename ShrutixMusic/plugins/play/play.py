@@ -306,8 +306,15 @@ async def _play_flow(
             cap = _["play_10"].format(details["title"], details["duration_min"])
         elif await SoundCloud.valid(url):
             try:
-                details, track_path = await SoundCloud.download(url)
-            except:
+                details, track_path = await SoundCloud.stream(url)
+            except Exception:
+                details = None
+            if not details:
+                try:
+                    details, track_path = await SoundCloud.download(url)
+                except Exception:
+                    return await mystic.edit_text(_["play_3"])
+            if not details:
                 return await mystic.edit_text(_["play_3"])
             duration_sec = details["duration_sec"]
             if duration_sec > config.DURATION_LIMIT:

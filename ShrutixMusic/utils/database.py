@@ -16,6 +16,8 @@ channeldb = mongodb.cplaymode
 countdb = mongodb.upcount
 gbansdb = mongodb.gban
 langdb = mongodb.language
+loggroupdb = mongodb.loggroup
+groupaddsdb = mongodb.groupadds
 onoffdb = mongodb.onoffper
 playmodedb = mongodb.playmode
 playtypedb = mongodb.playtypedb
@@ -494,6 +496,31 @@ async def add_served_user(user_id: int):
     if is_served:
         return
     return await usersdb.insert_one({"user_id": user_id})
+
+
+async def get_log_group():
+    data = await loggroupdb.find_one({"_id": "loggroup"})
+    return data.get("chat_id") if data else None
+
+
+async def set_log_group(chat_id: int):
+    return await loggroupdb.update_one(
+        {"_id": "loggroup"}, {"$set": {"chat_id": chat_id}}, upsert=True
+    )
+
+
+async def remove_log_group():
+    return await loggroupdb.delete_one({"_id": "loggroup"})
+
+
+async def record_group_add(user_id: int, chat_id: int) -> int:
+    await groupaddsdb.update_one(
+        {"user_id": user_id},
+        {"$addToSet": {"chat_ids": chat_id}},
+        upsert=True,
+    )
+    data = await groupaddsdb.find_one({"user_id": user_id})
+    return len(data.get("chat_ids", [])) if data else 0
 
 
 async def get_served_chats() -> list:

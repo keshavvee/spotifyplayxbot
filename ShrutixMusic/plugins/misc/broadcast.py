@@ -162,7 +162,8 @@ async def auto_clean():
                     async for user in nand.get_chat_members(
                         chat_id, filter=ChatMembersFilter.ADMINISTRATORS
                     ):
-                        if user.privileges.can_manage_video_chats:
+                        privileges = getattr(user, "privileges", None)
+                        if privileges and privileges.can_manage_video_chats:
                             adminlist[chat_id].append(user.user.id)
                     authusers = await get_authuser_names(chat_id)
                     for user in authusers:

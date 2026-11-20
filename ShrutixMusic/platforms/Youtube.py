@@ -1,8 +1,9 @@
 import asyncio
 import glob
 import os
-import time
 import re
+import shutil
+import time
 import urllib.parse
 from typing import Union
 import yt_dlp
@@ -21,13 +22,26 @@ _DOWNLOAD_GATE = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3"
 _PROVIDER_TEST_ID = os.getenv("PROVIDER_TEST_VIDEO_ID", "BddP6PYo2gs")
 _PROVIDER_RETEST_SECONDS = int(os.getenv("PROVIDER_RETEST_SECONDS", "900"))
 _PROVIDER_COOLDOWN_SECONDS = int(os.getenv("PROVIDER_COOLDOWN_SECONDS", "300"))
-_PROVIDER_DEFAULT_ORDER = {"audio": ["api", "ytdlp"], "video": ["ytdlp", "api"]}
+_PROVIDER_DEFAULT_ORDER = {"audio": ["api", "ytdlp"], "video": ["api", "ytdlp"]}
 _PROVIDER_STATS = {
     "audio": {"api": {"ewma": None, "fails": 0, "until": 0.0}, "ytdlp": {"ewma": None, "fails": 0, "until": 0.0}},
     "video": {"ytdlp": {"ewma": None, "fails": 0, "until": 0.0}, "api": {"ewma": None, "fails": 0, "until": 0.0}},
 }
 _PROVIDER_LOCK = asyncio.Lock()
 _PROVIDER_MONITOR_TASK = None
+_API_RETRIES = int(os.getenv("DOWNLOAD_RETRIES", "3"))
+_API_CHUNK_SIZE = int(os.getenv("DOWNLOAD_CHUNK_SIZE", str(256 * 1024)))
+_DIRECT_STREAM = os.getenv("DIRECT_STREAM", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_STREAM_URL_TTL = int(os.getenv("STREAM_URL_TTL", "1800"))
+_STREAM_PROBE_TIMEOUT = float(os.getenv("STREAM_PROBE_TIMEOUT", "8"))
+_STREAM_CACHE = {}
+_DL_PARALLEL_MIN = int(os.getenv("DOWNLOAD_PARALLEL_MIN", str(8 * 1024 * 1024)))
+_DL_PARALLEL_WORKERS = max(1, int(os.getenv("DOWNLOAD_PARALLEL_WORKERS", "4")))
 
 
 def _env_dir(name: str) -> str:
@@ -41,6 +55,109 @@ AUDIO_EXTENSIONS = ("webm", "m4a", "mp3", "ogg")
 VIDEO_EXTENSIONS = ("mp4", "mkv", "webm")
 
 
+def _api_ready() -> bool:
+    base = (API_URL or "").strip().rstrip("/")
+    key = (API_KEY or "").strip()
+    return bool("riteshyt" in base and key and key != "YOUR_API_KEY")
+
+
+def _api_direct_url(video_id: str, kind: str) -> str:
+    base = (API_URL or "").strip().rstrip("/")
+    key = (API_KEY or "").strip()
+    ext = "mp3" if kind == "audio" else "mp4"
+    return f"{base}/downloads/{key}/youtube.com/{video_id}.{ext}"
+
+
+async def _probe_stream_url(url: str, timeout: float = _STREAM_PROBE_TIMEOUT):
+    try:
+        connector = aiohttp.TCPConnector(limit=4, ttl_dns_cache=300)
+        timeout_cfg = aiohttp.ClientTimeout(
+            total=timeout, connect=min(5, timeout), sock_read=timeout
+        )
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(
+                url,
+                headers={"Range": "bytes=0-1", "Accept-Encoding": "identity"},
+                timeout=timeout_cfg,
+            ) as resp:
+                if resp.status not in (200, 206):
+                    return None
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if ctype and not any(
+                    marker in ctype
+                    for marker in ("audio", "video", "octet-stream", "mpegurl")
+                ):
+                    return None
+                chunk = await resp.content.read(2)
+                if not chunk:
+                    return None
+                return str(resp.url)
+    except Exception:
+        return None
+
+
+def _ytdlp_stream_sync(video_id: str, kind: str, timeout: int):
+    is_audio = kind == "audio"
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": timeout,
+        "format": (
+            "bestaudio[ext=m4a]/bestaudio/best"
+            if is_audio
+            else "best[height<=480][ext=mp4]/best[height<=480]/best"
+        ),
+    }
+    cookie_file = os.getenv("YTDLP_COOKIEFILE") or os.getenv("COOKIES_FILE")
+    if cookie_file and os.path.isfile(cookie_file):
+        opts["cookiefile"] = cookie_file
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={video_id}", download=False
+            )
+        if not info:
+            return None
+        if info.get("url"):
+            return info["url"]
+        for fmt in info.get("requested_formats") or []:
+            if fmt.get("url"):
+                return fmt["url"]
+    except Exception:
+        return None
+    return None
+
+
+async def _resolve_stream_url(video_id: str, kind: str):
+    if not _DIRECT_STREAM or not video_id or len(video_id) < 3:
+        return None
+    cache_key = (video_id, kind)
+    cached = _STREAM_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached and cached[1] > now:
+        return cached[0]
+    if len(_STREAM_CACHE) > 512:
+        for key in [k for k, v in _STREAM_CACHE.items() if v[1] <= now]:
+            _STREAM_CACHE.pop(key, None)
+    if _api_ready():
+        direct = _api_direct_url(video_id, kind)
+        resolved = await _probe_stream_url(direct)
+        if resolved:
+            _STREAM_CACHE[cache_key] = (resolved, now + _STREAM_URL_TTL)
+            return resolved
+    resolved = await asyncio.to_thread(_ytdlp_stream_sync, video_id, kind, 20)
+    if resolved and await _probe_stream_url(resolved):
+        _STREAM_CACHE[cache_key] = (resolved, now + 300)
+        return resolved
+    return None
+
+
+async def _stream_media(link: str, kind: str):
+    video_id = link.split("v=")[-1].split("&")[0] if "v=" in link else link
+    return await _resolve_stream_url(video_id, kind)
+
+
 def is_external_path(path) -> bool:
     if not path:
         return False
@@ -49,6 +166,26 @@ def is_external_path(path) -> bool:
         if base and full.startswith(base + os.sep):
             return True
     return False
+
+
+def _valid_media_file(path) -> bool:
+    try:
+        if not path or not os.path.isfile(path):
+            return False
+        if os.path.getsize(path) < 8192:
+            return False
+        with open(path, "rb") as handle:
+            head = handle.read(16)
+        return (
+            head.startswith(b"ID3")
+            or head[4:8] == b"ftyp"
+            or head.startswith(b"OggS")
+            or head.startswith(b"RIFF")
+            or head.startswith(b"\x1aE\xdf\xa3")
+            or head.startswith(b"fLaC")
+        )
+    except Exception:
+        return False
 
 
 def _find_external(directory: str, video_id: str, extensions, resp=None):
@@ -62,7 +199,7 @@ def _find_external(directory: str, video_id: str, extensions, resp=None):
     names.extend(f"{video_id}.{ext}" for ext in extensions)
     for name in names:
         path = os.path.join(directory, name)
-        if os.path.isfile(path) and os.path.getsize(path) > 0:
+        if _valid_media_file(path):
             return path
     return None
 
@@ -93,12 +230,17 @@ async def _download_media_inner(link: str, kind: str, timeout: int) -> str:
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{'mp3' if is_audio else 'mp4'}")
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-        return file_path
+    if os.path.exists(file_path):
+        if _valid_media_file(file_path):
+            return file_path
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
 
     base = (API_URL or "").strip().rstrip("/")
     key = (API_KEY or "").strip()
-    api_ready = bool("riteshyt" in base and key and key != "YOUR_API_KEY")
+    api_ready = _api_ready()
     order = _provider_order(kind, api_ready)
     for provider in order:
         started = time.monotonic()
@@ -116,30 +258,171 @@ async def _download_media_inner(link: str, kind: str, timeout: int) -> str:
     return None
 
 
-async def _download_api(video_id, kind, timeout, file_path, external, extensions, base, key):
-    if not ("riteshyt" in base and key and key != "YOUR_API_KEY"):
-        return None
-    ext = "mp3" if kind == "audio" else "mp4"
-    direct = f"{base}/downloads/{key}/{video_id}.{ext}"
+async def _parallel_remote_size(url, timeout):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(direct, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                if resp.status != 200:
-                    return None
-                if external:
-                    found = _find_external(external, video_id, extensions, resp)
-                    if found:
-                        return found
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            return file_path
+        connector = aiohttp.TCPConnector(limit=4, ttl_dns_cache=300)
+        timeout_cfg = aiohttp.ClientTimeout(
+            total=min(timeout, 20), connect=8, sock_read=15
+        )
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(
+                url,
+                headers={"Range": "bytes=0-0", "Accept-Encoding": "identity"},
+                timeout=timeout_cfg,
+            ) as resp:
+                if resp.status != 206:
+                    return None, str(resp.url)
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if ctype and not any(
+                    marker in ctype
+                    for marker in ("audio", "video", "octet-stream", "mpegurl")
+                ):
+                    return None, str(resp.url)
+                content_range = resp.headers.get("Content-Range", "")
+                total = content_range.rsplit("/", 1)[-1]
+                if not total.isdigit() or int(total) <= 0:
+                    return None, str(resp.url)
+                return int(total), str(resp.url)
     except Exception:
-        pass
+        return None, url
+
+
+async def _download_segment(session, url, start, end, target, timeout):
+    expected = end - start + 1
+    headers = {
+        "Range": f"bytes={start}-{end}",
+        "Accept-Encoding": "identity",
+    }
+    timeout_cfg = aiohttp.ClientTimeout(total=timeout, connect=20, sock_read=120)
+    async with session.get(url, headers=headers, timeout=timeout_cfg) as resp:
+        if resp.status != 206:
+            raise RuntimeError(f"range HTTP {resp.status}")
+        received = 0
+        with open(target, "wb") as handle:
+            async for chunk in resp.content.iter_chunked(_API_CHUNK_SIZE):
+                handle.write(chunk)
+                received += len(chunk)
+    if received != expected:
+        raise RuntimeError(f"range incomplete {received}/{expected}")
+
+
+def _merge_segments(parts, target):
+    with open(target, "wb") as output:
+        for part in parts:
+            with open(part, "rb") as handle:
+                shutil.copyfileobj(handle, output, length=1024 * 1024)
+
+
+async def _download_api_parallel(url, file_path, timeout):
+    total, final_url = await _parallel_remote_size(url, timeout)
+    if not total or total < _DL_PARALLEL_MIN:
+        return None
+    workers = min(_DL_PARALLEL_WORKERS, max(1, total // (1024 * 1024)))
+    segment = max(1, (total + workers - 1) // workers)
+    ranges = []
+    start = 0
+    index = 0
+    while start < total:
+        end = min(total - 1, start + segment - 1)
+        ranges.append((index, start, end))
+        start = end + 1
+        index += 1
+    part_path = file_path + ".part"
+    segment_paths = [f"{part_path}.{i}" for i, _, _ in ranges]
+    connector = aiohttp.TCPConnector(limit=workers + 2, ttl_dns_cache=300)
     try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            await asyncio.gather(
+                *[
+                    _download_segment(
+                        session,
+                        final_url,
+                        begin,
+                        end,
+                        segment_paths[i],
+                        timeout,
+                    )
+                    for i, begin, end in ranges
+                ]
+            )
+        await asyncio.to_thread(_merge_segments, segment_paths, part_path)
+        if not _valid_media_file(part_path):
+            raise RuntimeError("invalid media payload")
+        os.replace(part_path, file_path)
+        return file_path
+    except Exception:
+        for path in segment_paths + [part_path]:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        return None
+
+
+async def _download_api(video_id, kind, timeout, file_path, external, extensions, base, key):
+    if not _api_ready():
+        return None
+    direct = _api_direct_url(video_id, kind)
+    part_path = file_path + ".part"
+    if not external and not os.path.exists(part_path):
+        parallel = await _download_api_parallel(direct, file_path, timeout)
+        if parallel:
+            return parallel
+    for attempt in range(_API_RETRIES):
+        offset = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+        headers = {"Accept-Encoding": "identity"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        try:
+            connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
+            timeout_cfg = aiohttp.ClientTimeout(total=timeout, connect=15, sock_read=120)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(direct, headers=headers, timeout=timeout_cfg) as resp:
+                    if resp.status == 416:
+                        if _valid_media_file(part_path):
+                            os.replace(part_path, file_path)
+                            return file_path
+                        try:
+                            os.remove(part_path)
+                        except Exception:
+                            pass
+                        continue
+                    if resp.status not in (200, 206):
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    if external:
+                        found = _find_external(external, video_id, extensions, resp)
+                        if found:
+                            return found
+                    expected = None
+                    if resp.status == 206:
+                        content_range = resp.headers.get("Content-Range", "")
+                        total = content_range.rsplit("/", 1)[-1]
+                        if total.isdigit():
+                            expected = int(total)
+                    elif resp.content_length is not None:
+                        expected = offset + resp.content_length
+                    mode = "ab" if offset and resp.status == 206 else "wb"
+                    if mode == "wb":
+                        offset = 0
+                        expected = resp.content_length
+                    with open(part_path, mode) as handle:
+                        async for chunk in resp.content.iter_chunked(_API_CHUNK_SIZE):
+                            handle.write(chunk)
+            size = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+            if size == 0:
+                raise RuntimeError("empty response")
+            if expected is not None and size != expected:
+                raise RuntimeError(f"incomplete download: {size}/{expected}")
+            if not _valid_media_file(part_path):
+                raise RuntimeError("invalid media payload")
+            os.replace(part_path, file_path)
+            return file_path
+        except Exception:
+            if attempt + 1 < _API_RETRIES:
+                await asyncio.sleep(0.6 * (attempt + 1))
+    try:
+        if os.path.exists(part_path):
+            os.remove(part_path)
     except Exception:
         pass
     return None
@@ -174,16 +457,13 @@ async def _record_provider(kind, provider, ok, seconds):
 
 
 async def _probe_api(kind, timeout=30):
-    base = (API_URL or "").strip().rstrip("/")
-    key = (API_KEY or "").strip()
-    if not ("riteshyt" in base and key and key != "YOUR_API_KEY"):
+    if not _api_ready():
         return None
-    ext = "mp3" if kind == "audio" else "mp4"
     started = time.monotonic()
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{base}/downloads/{key}/{_PROVIDER_TEST_ID}.{ext}",
+                _api_direct_url(_PROVIDER_TEST_ID, kind),
                 headers={"Range": "bytes=0-65535"},
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
@@ -278,7 +558,11 @@ async def _ytdlp_fallback(video_id: str, kind: str, timeout: int):
 def _ytdlp_fallback_sync(video_id: str, kind: str, timeout: int):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     pattern = os.path.join(DOWNLOAD_DIR, f"{video_id}.*")
-    existing = [p for p in glob.glob(pattern) if os.path.getsize(p) > 0]
+    existing = [
+        p
+        for p in glob.glob(pattern)
+        if not p.endswith(".part") and _valid_media_file(p)
+    ]
     if existing:
         return existing[0]
     is_audio = kind == "audio"
@@ -299,15 +583,27 @@ def _ytdlp_fallback_sync(video_id: str, kind: str, timeout: int):
             ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
     except Exception:
         return None
-    found = [p for p in glob.glob(pattern) if os.path.getsize(p) > 0]
+    found = [
+        p
+        for p in glob.glob(pattern)
+        if not p.endswith(".part") and _valid_media_file(p)
+    ]
     return found[0] if found else None
 
 
-async def download_song(link: str) -> str:
+async def download_song(link: str, stream: bool = False) -> str:
+    if stream:
+        direct = await _stream_media(link, "audio")
+        if direct:
+            return direct
     return await _download_media(link, "audio", 300)
 
 
-async def download_video(link: str) -> str:
+async def download_video(link: str, stream: bool = False) -> str:
+    if stream:
+        direct = await _stream_media(link, "video")
+        if direct:
+            return direct
     return await _download_media(link, "video", 600)
 
 
@@ -572,14 +868,15 @@ class YouTubeAPI:
         songvideo: Union[bool, str] = None,
         format_id: Union[bool, str] = None,
         title: Union[bool, str] = None,
+        stream: bool = False,
     ) -> str:
         if videoid:
             link = self.base + link
         try:
             if video:
-                downloaded_file = await download_video(link)
+                downloaded_file = await download_video(link, stream=stream)
             else:
-                downloaded_file = await download_song(link)
+                downloaded_file = await download_song(link, stream=stream)
             if downloaded_file:
                 return downloaded_file, True
             return None, False

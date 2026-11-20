@@ -5,6 +5,10 @@ from datetime import datetime, timedelta
 from typing import Union
 
 from pyrogram import Client
+from pyrogram.raw.functions.channels import GetFullChannel
+from pyrogram.raw.functions.messages import GetFullChat
+from pyrogram.raw.functions.phone import EditGroupCallTitle
+from pyrogram.raw.types import InputChannel, InputPeerChannel, InputPeerChat
 from pytgcalls import PyTgCalls, StreamType
 from pytgcalls.exceptions import (
     AlreadyJoinedError,
@@ -152,6 +156,7 @@ class Call(PyTgCalls):
         self._prejoin_tasks = {}
         self._prejoin_video = {}
         self._chat_locks = {}
+        self._switch_locks = {}
 
     def chat_lock(self, chat_id: int):
         lock = self._chat_locks.get(chat_id)
@@ -159,6 +164,53 @@ class Call(PyTgCalls):
             lock = asyncio.Lock()
             self._chat_locks[chat_id] = lock
         return lock
+
+    def switch_lock(self, chat_id: int):
+        lock = self._switch_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._switch_locks[chat_id] = lock
+        return lock
+
+    def _assistant_client(self, assistant):
+        for call, client in (
+            (self.one, self.userbot1),
+            (self.two, self.userbot2),
+            (self.three, self.userbot3),
+            (self.four, self.userbot4),
+            (self.five, self.userbot5),
+        ):
+            if assistant is call:
+                return client
+        return None
+
+    async def _set_vc_title(self, assistant, chat_id: int):
+        client = self._assistant_client(assistant)
+        if client is None:
+            return
+        try:
+            peer = await client.resolve_peer(chat_id)
+            if isinstance(peer, InputPeerChannel):
+                full = await client.invoke(
+                    GetFullChannel(
+                        channel=InputChannel(
+                            channel_id=peer.channel_id,
+                            access_hash=peer.access_hash,
+                        )
+                    )
+                )
+            elif isinstance(peer, InputPeerChat):
+                full = await client.invoke(GetFullChat(chat_id=peer.chat_id))
+            else:
+                return
+            call = getattr(full.full_chat, "call", None)
+            if call is not None:
+                await asyncio.wait_for(
+                    client.invoke(EditGroupCallTitle(call=call, title=config.VC_TITLE)),
+                    timeout=10,
+                )
+        except Exception:
+            pass
 
     async def _assistant_join(self, assistant, chat_id: int, stream, _):
         try:
@@ -172,6 +224,35 @@ class Call(PyTgCalls):
             raise AssistantErr(_["call_9"])
         except TelegramServerError:
             raise AssistantErr(_["call_10"])
+        await self._set_vc_title(assistant, chat_id)
+
+    async def _switch_stream(self, client, chat_id: int, stream) -> bool:
+        async with self.switch_lock(chat_id):
+            try:
+                await client.change_stream(chat_id, stream)
+                return True
+            except Exception as exc:
+                LOGGER(__name__).warning(
+                    "change_stream failed in %s: %s: %s",
+                    chat_id,
+                    type(exc).__name__,
+                    exc,
+                )
+            try:
+                await client.leave_group_call(chat_id)
+            except Exception:
+                pass
+            try:
+                await client.join_group_call(chat_id, stream)
+                return True
+            except Exception as exc:
+                LOGGER(__name__).error(
+                    "rejoin failed in %s: %s: %s",
+                    chat_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                return False
 
     async def _run_prejoin(self, chat_id: int, video: bool = False):
         assistant = await group_assistant(self, chat_id)
@@ -194,6 +275,8 @@ class Call(PyTgCalls):
         await self._assistant_join(assistant, chat_id, stream, _)
 
     async def prejoin_start(self, chat_id: int, video: bool = False) -> bool:
+        if not config.PREJOIN_ENABLED:
+            return False
         if chat_id in self._prejoin_tasks or await is_active_chat(chat_id):
             return False
         self._prejoin_tasks[chat_id] = asyncio.ensure_future(
@@ -368,10 +451,8 @@ class Call(PyTgCalls):
             )
         else:
             stream = AudioPiped(link, audio_parameters=HighQualityAudio())
-        await assistant.change_stream(
-            chat_id,
-            stream,
-        )
+        if not await self._switch_stream(assistant, chat_id, stream):
+            raise AssistantErr("stream switch failed")
 
     async def seek_stream(self, chat_id, file_path, to_seek, duration, mode):
         assistant = await group_assistant(self, chat_id)
@@ -420,26 +501,34 @@ class Call(PyTgCalls):
         else:
             stream = AudioPiped(link, audio_parameters=HighQualityAudio())
         joined = False
-        task = self._prejoin_tasks.pop(chat_id, None)
+        task = self._prejoin_tasks.get(chat_id)
         if task is not None:
-            await task
+            try:
+                await task
+            except Exception as exc:
+                LOGGER(__name__).warning(
+                    "prejoin failed in %s: %s: %s",
+                    chat_id,
+                    type(exc).__name__,
+                    exc,
+                )
+            finally:
+                self._prejoin_tasks.pop(chat_id, None)
             prejoin_was_video = self._prejoin_video.pop(chat_id, False)
-            if bool(video) == prejoin_was_video:
-                try:
-                    await assistant.change_stream(chat_id, stream)
-                    joined = True
-                except Exception:
+            if task is not None and not task.cancelled() and task.exception() is None:
+                if bool(video) == prejoin_was_video:
+                    joined = await self._switch_stream(assistant, chat_id, stream)
+                if not joined:
                     try:
                         await assistant.leave_group_call(chat_id)
                     except Exception:
                         pass
-            else:
-                try:
-                    await assistant.leave_group_call(chat_id)
-                except Exception:
-                    pass
         if not joined:
-            await self._assistant_join(assistant, chat_id, stream, _)
+            try:
+                await self._assistant_join(assistant, chat_id, stream, _)
+            except AssistantErr:
+                if not await self._switch_stream(assistant, chat_id, stream):
+                    raise
         await add_active_chat(chat_id)
         await music_on(chat_id)
         if video:
@@ -509,9 +598,7 @@ class Call(PyTgCalls):
                         link,
                         audio_parameters=HighQualityAudio(),
                     )
-                try:
-                    await client.change_stream(chat_id, stream)
-                except Exception:
+                if not await self._switch_stream(client, chat_id, stream):
                     return await nand.send_message(
                         original_chat_id,
                         text=_["call_6"],
@@ -539,6 +626,7 @@ class Call(PyTgCalls):
                         mystic,
                         videoid=True,
                         video=True if str(streamtype) == "video" else False,
+                        stream=True,
                     )
                 except:
                     return await mystic.edit_text(
@@ -555,9 +643,7 @@ class Call(PyTgCalls):
                         file_path,
                         audio_parameters=HighQualityAudio(),
                     )
-                try:
-                    await client.change_stream(chat_id, stream)
-                except:
+                if not await self._switch_stream(client, chat_id, stream):
                     return await nand.send_message(
                         original_chat_id,
                         text=_["call_6"],
@@ -588,9 +674,7 @@ class Call(PyTgCalls):
                     if str(streamtype) == "video"
                     else AudioPiped(videoid, audio_parameters=HighQualityAudio())
                 )
-                try:
-                    await client.change_stream(chat_id, stream)
-                except:
+                if not await self._switch_stream(client, chat_id, stream):
                     return await nand.send_message(
                         original_chat_id,
                         text=_["call_6"],
@@ -616,9 +700,7 @@ class Call(PyTgCalls):
                         queued,
                         audio_parameters=HighQualityAudio(),
                     )
-                try:
-                    await client.change_stream(chat_id, stream)
-                except:
+                if not await self._switch_stream(client, chat_id, stream):
                     return await nand.send_message(
                         original_chat_id,
                         text=_["call_6"],

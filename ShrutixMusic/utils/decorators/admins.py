@@ -1,5 +1,5 @@
 # ShrutixMusic/utils/decorators/admins.py
-from pyrogram.enums import ChatType
+from pyrogram.enums import ChatMemberStatus, ChatType
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ShrutixMusic import nand
@@ -18,6 +18,15 @@ from config import SUPPORT_CHAT, adminlist, confirmer
 from strings import get_string
 
 from ..formatters import int_to_alpha
+
+
+def _can_manage_video_chats(member) -> bool:
+    if member is None:
+        return False
+    if getattr(member, "status", None) == ChatMemberStatus.OWNER:
+        return True
+    privileges = getattr(member, "privileges", None)
+    return bool(privileges and privileges.can_manage_video_chats)
 
 
 def AdminRightsCheck(mystic):
@@ -207,12 +216,12 @@ def AdminActual(mystic):
             return await message.reply_text(_["general_3"], reply_markup=upl)
         if message.from_user.id not in SUDOERS:
             try:
-                member = (
-                    await nand.get_chat_member(message.chat.id, message.from_user.id)
-                ).privileges
-            except:
+                member = await nand.get_chat_member(
+                    message.chat.id, message.from_user.id
+                )
+            except Exception:
                 return
-            if not member.can_manage_video_chats:
+            if not _can_manage_video_chats(member):
                 return await message.reply(_["general_4"])
         return await mystic(client, message, _)
 
@@ -237,15 +246,13 @@ def ActualAdminCB(mystic):
         is_non_admin = await is_nonadmin_chat(CallbackQuery.message.chat.id)
         if not is_non_admin:
             try:
-                a = (
-                    await nand.get_chat_member(
-                        CallbackQuery.message.chat.id,
-                        CallbackQuery.from_user.id,
-                    )
-                ).privileges
-            except:
+                member = await nand.get_chat_member(
+                    CallbackQuery.message.chat.id,
+                    CallbackQuery.from_user.id,
+                )
+            except Exception:
                 return await CallbackQuery.answer(_["general_4"], show_alert=True)
-            if not a.can_manage_video_chats:
+            if not _can_manage_video_chats(member):
                 if CallbackQuery.from_user.id not in SUDOERS:
                     token = await int_to_alpha(CallbackQuery.from_user.id)
                     _check = await get_authuser_names(CallbackQuery.from_user.id)

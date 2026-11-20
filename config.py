@@ -88,6 +88,18 @@ START_IMG_URL = getenv(
     "https://graph.org/file/7557c0e0e0c1708f62d6a-6892ea881cc1555c83.jpg"
 )
 
+VC_TITLE = getenv(
+    "VC_TITLE",
+    "✧˚₊· ᴄʟɪᴄᴋ ʜᴇʀᴇ ꜰᴏʀ ᴍᴜꜱɪᴄ ·₊˚✧"
+)
+
+PREJOIN_ENABLED = getenv("PREJOIN_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 PING_IMG_URL = getenv(
     "PING_IMG_URL",
     "https://graph.org/file/f35df5dd605d76ff790b7-953db0f3e71a2e5a1a.jpg"

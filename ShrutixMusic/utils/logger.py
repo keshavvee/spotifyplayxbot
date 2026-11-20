@@ -1,8 +1,18 @@
 from pyrogram.enums import ParseMode
 
 from ShrutixMusic import nand
-from ShrutixMusic.utils.database import is_on_off
+from ShrutixMusic.utils.database import get_log_group, is_on_off
 from config import LOGGER_ID
+
+
+async def send_log(text, **kwargs):
+    try:
+        chat_id = await get_log_group() or LOGGER_ID
+        kwargs.setdefault("parse_mode", ParseMode.HTML)
+        kwargs.setdefault("disable_web_page_preview", True)
+        return await nand.send_message(chat_id, text, **kwargs)
+    except Exception:
+        return None
 
 
 async def play_logs(message, streamtype):
@@ -22,13 +32,8 @@ async def play_logs(message, streamtype):
 <b>sᴛʀᴇᴀᴍᴛʏᴘᴇ :</b> {streamtype}"""
         if message.chat.id != LOGGER_ID:
             try:
-                await nand.send_message(
-                    chat_id=LOGGER_ID,
-                    text=logger_text,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except:
+                await send_log(logger_text)
+            except Exception:
                 pass
         return
 
@@ -57,11 +62,6 @@ async def autoplay_logs(chat_id, title, video_id, previous_title, video=False):
 <b>ǫᴜᴇʀʏ :</b> <a href="https://www.youtube.com/watch?v={video_id}">{title}</a>
 <b>sᴛʀᴇᴀᴍᴛʏᴘᴇ :</b> {streamtype}"""
     try:
-        await nand.send_message(
-            chat_id=LOGGER_ID,
-            text=logger_text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
-    except:
+        await send_log(logger_text)
+    except Exception:
         pass

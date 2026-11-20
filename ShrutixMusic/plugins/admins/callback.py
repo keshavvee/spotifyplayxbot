@@ -279,6 +279,7 @@ async def del_back_playlist(client, CallbackQuery, _):
                     mystic,
                     videoid=True,
                     video=status,
+                    stream=True,
                 )
             except:
                 return await mystic.edit_text(_["call_6"])

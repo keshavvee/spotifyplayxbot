@@ -8,6 +8,7 @@ from py_yt import VideosSearch
 
 import config
 from ShrutixMusic import nand
+from ShrutixMusic.logging import LOGGER
 from ShrutixMusic.misc import _boot_
 from ShrutixMusic.plugins.sudo.sudoers import sudoers_list
 from ShrutixMusic.utils.database import (
@@ -15,12 +16,16 @@ from ShrutixMusic.utils.database import (
     add_served_user,
     blacklisted_chats,
     get_lang,
+    get_served_users,
     is_banned_user,
+    is_served_user,
     is_on_off,
 )
 from ShrutixMusic.utils.decorators.language import LanguageStart
 from ShrutixMusic.utils.formatters import get_readable_time
+from ShrutixMusic.utils.group_migrate import migrate_basic_group
 from ShrutixMusic.utils.inline import help_pannel, private_panel, start_panel
+from ShrutixMusic.utils.logger import send_log
 from config import BANNED_USERS
 from strings import get_string
 
@@ -35,7 +40,16 @@ MESSAGE_EFFECTS = [
 @nand.on_message(filters.command(["start"]) & filters.private & ~BANNED_USERS)
 @LanguageStart
 async def start_pm(client, message: Message, _):
+    is_new_user = not await is_served_user(message.from_user.id)
     await add_served_user(message.from_user.id)
+    if is_new_user and await is_on_off(2):
+        total_users = len(await get_served_users())
+        await send_log(
+            "<b>👤 ɴᴇᴡ ᴜsᴇʀ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ</b>\n\n"
+            f"<b>ᴜsᴇʀ :</b> {message.from_user.mention}\n"
+            f"<b>ᴜsᴇʀ ɪᴅ :</b> <code>{message.from_user.id}</code>\n"
+            f"<b>ᴛᴏᴛᴀʟ ᴜsᴇʀs :</b> <code>{total_users}</code>"
+        )
     effect_id = random.choice(MESSAGE_EFFECTS)
     name = message.text.split(None, 1)[1] if len(message.text.split()) > 1 else ""
     if name[0:4] == "help":
@@ -49,9 +63,8 @@ async def start_pm(client, message: Message, _):
     if name[0:3] == "sud":
         await sudoers_list(client=client, message=message, _=_)
         if await is_on_off(2):
-            return await nand.send_message(
-                chat_id=config.LOGGER_ID,
-                text=f"{message.from_user.mention} ᴊᴜsᴛ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ ᴛᴏ ᴄʜᴇᴄᴋ <b>sᴜᴅᴏʟɪsᴛ</b>.\n\n<b>ᴜsᴇʀ ɪᴅ :</b> <code>{message.from_user.id}</code>\n<b>ᴜsᴇʀɴᴀᴍᴇ :</b> @{message.from_user.username}",
+            return await send_log(
+                f"{message.from_user.mention} ᴊᴜsᴛ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ ᴛᴏ ᴄʜᴇᴄᴋ <b>sᴜᴅᴏʟɪsᴛ</b>.\n\n<b>ᴜsᴇʀ ɪᴅ :</b> <code>{message.from_user.id}</code>\n<b>ᴜsᴇʀɴᴀᴍᴇ :</b> @{message.from_user.username}",
             )
         return
     if name[0:3] == "inf":
@@ -87,9 +100,8 @@ async def start_pm(client, message: Message, _):
             reply_markup=key,
         )
         if await is_on_off(2):
-            await nand.send_message(
-                chat_id=config.LOGGER_ID,
-                text=f"{message.from_user.mention} ᴊᴜsᴛ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ ᴛᴏ ᴄʜᴇᴄᴋ <b>ᴛʀᴀᴄᴋ ɪɴғᴏʀᴍᴀᴛɪᴏɴ</b>.\n\n<b>ᴜsᴇʀ ɪᴅ :</b> <code>{message.from_user.id}</code>\n<b>ᴜsᴇʀɴᴀᴍᴇ :</b> @{message.from_user.username}",
+            await send_log(
+                f"{message.from_user.mention} ᴊᴜsᴛ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ ᴛᴏ ᴄʜᴇᴄᴋ <b>ᴛʀᴀᴄᴋ ɪɴғᴏʀᴍᴀᴛɪᴏɴ</b>.\n\n<b>ᴜsᴇʀ ɪᴅ :</b> <code>{message.from_user.id}</code>\n<b>ᴜsᴇʀɴᴀᴍᴇ :</b> @{message.from_user.username}",
             )
         return
     out = private_panel(_)
@@ -100,9 +112,8 @@ async def start_pm(client, message: Message, _):
         effect_id=effect_id,
     )
     if await is_on_off(2):
-        return await nand.send_message(
-            chat_id=config.LOGGER_ID,
-            text=f"{message.from_user.mention} ᴊᴜsᴛ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ.\n\n<b>ᴜsᴇʀ ɪᴅ :</b> <code>{message.from_user.id}</code>\n<b>ᴜsᴇʀɴᴀᴍᴇ :</b> @{message.from_user.username}",
+        return await send_log(
+            f"{message.from_user.mention} ᴊᴜsᴛ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ.\n\n<b>ᴜsᴇʀ ɪᴅ :</b> <code>{message.from_user.id}</code>\n<b>ᴜsᴇʀɴᴀᴍᴇ :</b> @{message.from_user.username}",
         )
 
 
@@ -131,6 +142,24 @@ async def welcome(client, message: Message):
                 except:
                     pass
             if member.id == nand.id:
+                if message.chat.type == ChatType.GROUP:
+                    new_chat_id, reason = await migrate_basic_group(
+                        message.chat.id, nand
+                    )
+                    if new_chat_id:
+                        await add_served_chat(new_chat_id)
+                        await nand.send_message(
+                            new_chat_id,
+                            "✅ ɢʀᴏᴜᴘ ᴀᴜᴛᴏ-ᴄᴏɴᴠᴇʀᴛᴇᴅ ᴛᴏ sᴜᴘᴇʀɢʀᴏᴜᴘ.\n\n"
+                            "ɴᴏᴡ sᴛᴀʀᴛ ᴛʜᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴀɴᴅ ᴜsᴇ /play.",
+                        )
+                    else:
+                        await message.reply_text(
+                            "» ɢʀᴏᴜᴘ ᴀᴜᴛᴏ-ᴄᴏɴᴠᴇʀsɪᴏɴ ғᴀɪʟᴇᴅ.\n\n"
+                            "ᴀᴅᴅ ᴛʜᴇ ʙᴏᴛ ᴀs ᴀᴅᴍɪɴ ᴡɪᴛʜ ɪɴᴠɪᴛᴇ ᴜsᴇʀs, "
+                            "ᴛʜᴇɴ ᴜsᴇ /play ᴀɢᴀɪɴ.",
+                        )
+                    return await message.stop_propagation()
                 if message.chat.type != ChatType.SUPERGROUP:
                     await message.reply_text(_["start_4"])
                     return await nand.leave_chat(message.chat.id)
@@ -159,4 +188,4 @@ async def welcome(client, message: Message):
                 await add_served_chat(message.chat.id)
                 await message.stop_propagation()
         except Exception as ex:
-            print(ex)
+            LOGGER(__name__).exception("group welcome failed: %s", ex)

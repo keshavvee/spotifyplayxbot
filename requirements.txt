@@ -1,18 +1,18 @@
 aiofiles
-aiohttp
+aiohttp==3.14.5
 asyncio
 beautifulsoup4
 dnspython
-ffmpeg-python
+ffmpeg-python==0.2.0
 gitpython
 hachoir
 heroku3
 httpx[http2]
-kurigram>=2.2.26
-motor
+kurigram==2.2.27
+motor==3.7.1
 pillow
-psutil
-py-tgcalls==1.1.6
+psutil==7.2.2
+py-tgcalls==1.2.9
 ntgcalls==1.1.2
 pykeyboard
 python-dotenv
@@ -20,10 +20,10 @@ pyyaml
 requests
 speedtest-cli
 spotipy
-tgcrypto
-uvloop==0.21.0; sys_platform != "win32"
+tgcrypto==1.2.5
+uvloop==0.23.0; sys_platform != "win32"
 unidecode
-yt-dlp
+yt-dlp==2026.10.26
 youtube-search
 youtube-search-python
 py-yt-search

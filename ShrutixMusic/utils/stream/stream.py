@@ -5,7 +5,7 @@ from typing import Union
 from uuid import uuid4
 
 import config
-from ShrutixMusic import Carbon, YouTube, nand
+from ShrutixMusic import Carbon, LOGGER, YouTube, nand
 from ShrutixMusic.core.call import Shruti
 from ShrutixMusic.misc import db
 from ShrutixMusic.utils.database import add_active_video_chat, is_active_chat
@@ -24,9 +24,17 @@ from ShrutixMusic.utils.thumbnails import get_thumb
 async def _fetch(_, chat_id, vidid, mystic, video):
     status = True if video else None
     task = asyncio.ensure_future(
-        YouTube.download(vidid, mystic, videoid=True, video=status)
+        YouTube.download(vidid, mystic, videoid=True, video=status, stream=True)
     )
-    await Shruti.await_prejoin(chat_id)
+    try:
+        await Shruti.await_prejoin(chat_id)
+    except Exception as exc:
+        LOGGER(__name__).warning(
+            "prejoin wait failed in %s: %s: %s",
+            chat_id,
+            type(exc).__name__,
+            exc,
+        )
     try:
         file_path, direct = await task
     except Exception:

@@ -1,6 +1,6 @@
 import asyncio
 
-from pyrogram.enums import ChatMemberStatus
+from pyrogram.enums import ChatMemberStatus, ChatPrivileges, ChatType
 from pyrogram.errors import (
     ChatAdminRequired,
     InviteRequestSent,
@@ -20,6 +20,7 @@ from ShrutixMusic.utils.database import (
     is_active_chat,
     is_maintenance,
 )
+from ShrutixMusic.utils.group_migrate import migrate_basic_group
 from ShrutixMusic.utils.inline import botplaylist_markup
 from config import PLAYLIST_IMG_URL, SUPPORT_CHAT, adminlist
 from strings import get_string
@@ -27,8 +28,44 @@ from strings import get_string
 links = {}
 
 
+async def _ensure_assistant_admin(chat_id, assistant):
+    try:
+        member = await nand.get_chat_member(chat_id, assistant.id)
+    except (ChatAdminRequired, UserNotParticipant):
+        return False
+    if member.status == ChatMemberStatus.OWNER:
+        return True
+    privileges = getattr(member, "privileges", None)
+    if member.status == ChatMemberStatus.ADMINISTRATOR and privileges and privileges.can_manage_video_chats:
+        return True
+    try:
+        await nand.promote_chat_member(
+            chat_id,
+            assistant.id,
+            privileges=ChatPrivileges(can_manage_video_chats=True),
+        )
+        return True
+    except Exception:
+        return False
+
+
 def PlayWrapper(command):
     async def wrapper(client, message):
+        if message.chat.type == ChatType.GROUP:
+            new_chat_id, _reason = await migrate_basic_group(message.chat.id, nand)
+            if new_chat_id:
+                await nand.send_message(
+                    new_chat_id,
+                    "✅ ɢʀᴏᴜᴘ ᴀᴜᴛᴏ-ᴄᴏɴᴠᴇʀᴛᴇᴅ ᴛᴏ sᴜᴘᴇʀɢʀᴏᴜᴘ.\n\n"
+                    "ɴᴏᴡ sᴛᴀʀᴛ ᴛʜᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴀɴᴅ ᴜsᴇ /play.",
+                )
+            else:
+                await message.reply_text(
+                    "» ɢʀᴏᴜᴘ ᴀᴜᴛᴏ-ᴄᴏɴᴠᴇʀsɪᴏɴ ғᴀɪʟᴇᴅ.\n\n"
+                    "ᴀᴅᴅ ᴛʜᴇ ʙᴏᴛ ᴀs ᴀᴅᴍɪɴ ᴡɪᴛʜ ɪɴᴠɪᴛᴇ ᴜsᴇʀs, "
+                    "ᴛʜᴇɴ ᴜsᴇ /play ᴀɢᴀɪɴ.",
+                )
+            return
         language = await get_lang(message.chat.id)
         _ = get_string(language)
         if message.sender_chat:
@@ -179,6 +216,13 @@ def PlayWrapper(command):
                     await userbot.resolve_peer(chat_id)
                 except:
                     pass
+
+            if not await _ensure_assistant_admin(chat_id, userbot):
+                return await message.reply_text(
+                    "» ᴀssɪsᴛᴀɴᴛ ɪs ɴᴏᴛ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪs ᴄʜᴀᴛ.\n\n"
+                    f"ᴀᴅᴅ <b>{userbot.name}</b> ᴀs ᴀᴅᴍɪɴ ᴡɪᴛʜ "
+                    "<b>ᴍᴀɴᴀɢᴇ ᴠɪᴅᴇᴏ ᴄʜᴀᴛs</b>, ᴛʜᴇɴ ᴛʀʏ ᴀɢᴀɪɴ."
+                )
 
         return await command(
             client,

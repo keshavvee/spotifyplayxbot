@@ -84,7 +84,7 @@ def _clean(chat_id, entry, tracks):
 
 async def _download(next_id, video, timeout):
     task = asyncio.ensure_future(
-        YouTube.download(next_id, None, video=video, videoid=True)
+        YouTube.download(next_id, None, video=video, videoid=True, stream=True)
     )
     try:
         return await asyncio.wait_for(asyncio.shield(task), timeout)
@@ -102,7 +102,7 @@ async def _pick(chat_id, entry, video, timeout):
         thumb = asyncio.ensure_future(get_thumb(next_id))
         file_path, direct = await _download(next_id, video, timeout)
         entry["inflight"] = None
-        if not file_path or not os.path.exists(file_path):
+        if not file_path or (not direct and not os.path.exists(file_path)):
             entry["failed"].add(next_id)
             continue
         title = (track.get("title") or "Autoplay Track").title()
@@ -200,7 +200,7 @@ async def try_autoplay(chat_id, popped) -> bool:
                 pass
         picked = entry.get("ready")
         entry["ready"] = None
-        if picked and not os.path.exists(picked[3]):
+        if picked and not picked[4] and not os.path.exists(picked[3]):
             picked = None
         leftover = list(entry["tracks"])
         failed = set(entry["failed"])

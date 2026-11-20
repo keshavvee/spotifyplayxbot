@@ -3,14 +3,18 @@ import time
 
 from pyrogram.enums import ChatMemberStatus, ChatType
 
-import config
 from ShrutixMusic import nand
+from ShrutixMusic.logging import LOGGER
 from ShrutixMusic.utils.database import (
     delete_chat_link,
     get_chat_link,
+    get_served_chats,
+    get_served_users,
+    record_group_add,
     remove_served_chat,
     save_chat_link,
 )
+from ShrutixMusic.utils.logger import send_log
 
 NOT_APPLICABLE = "Not Applicable"
 OUT_OF_CHAT = (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED)
@@ -68,12 +72,19 @@ async def _current_link(chat, member):
 
 
 async def _send_log(text):
-    try:
-        await nand.send_message(
-            config.LOGGER_ID, text, disable_web_page_preview=True
-        )
-    except Exception as ex:
-        print(ex)
+    await send_log(text)
+
+
+def _bot_level(member):
+    if member is None:
+        return "ᴜɴᴋɴᴏᴡɴ"
+    if member.status == ChatMemberStatus.OWNER:
+        return "ᴏᴡɴᴇʀ"
+    if member.status == ChatMemberStatus.ADMINISTRATOR:
+        return "ᴀᴅᴍɪɴ"
+    if member.status == ChatMemberStatus.RESTRICTED:
+        return "ʀᴇsᴛʀɪᴄᴛᴇᴅ"
+    return "ɴᴏʀᴍᴀʟ ᴜsᴇʀ"
 
 
 async def _on_added(update, member):
@@ -83,15 +94,24 @@ async def _on_added(update, member):
         try:
             await save_chat_link(chat.id, link)
         except Exception as ex:
-            print(ex)
+            LOGGER(__name__).exception("group link save failed: %s", ex)
     adder, adder_id = _who(update.from_user)
+    actor_id = update.from_user.id if update.from_user else None
+    added_count = await record_group_add(actor_id, chat.id) if actor_id else 0
+    total_users = len(await get_served_users())
+    total_chats = len(await get_served_chats())
+    level = _bot_level(member)
     await _send_log(
         f"<b>➕ {nand.mention} ᴀᴅᴅᴇᴅ ɪɴ ᴀ ɴᴇᴡ ɢʀᴏᴜᴘ</b>\n\n"
         f"<b>ɢʀᴏᴜᴘ :</b> {html.escape(chat.title or NOT_APPLICABLE)}\n"
         f"<b>ɢʀᴏᴜᴘ ɪᴅ :</b> <code>{chat.id}</code>\n"
-        f"<b>ɢʀᴏᴜᴘ ʟɪɴᴋ :</b> {_link_text(link)}\n\n"
+        f"<b>ɢʀᴏᴜᴘ ʟɪɴᴋ :</b> {_link_text(link)}\n"
+        f"<b>ʙᴏᴛ ʟᴇᴠᴇʟ :</b> {level}\n\n"
         f"<b>ᴀᴅᴅᴇᴅ ʙʏ :</b> {adder}\n"
-        f"<b>ᴜsᴇʀ ɪᴅ :</b> {adder_id}"
+        f"<b>ᴜsᴇʀ ɪᴅ :</b> {adder_id}\n"
+        f"<b>ɢʀᴏᴜᴘs ᴀᴅᴅᴇᴅ ʙʏ ᴜsᴇʀ :</b> <code>{added_count}</code>\n"
+        f"<b>ᴛᴏᴛᴀʟ ᴜsᴇʀs :</b> <code>{total_users}</code>\n"
+        f"<b>ᴛᴏᴛᴀʟ ɢʀᴏᴜᴘs :</b> <code>{total_chats}</code>"
     )
 
 
@@ -122,7 +142,7 @@ async def _on_removed(update):
         try:
             await cleanup(chat.id)
         except Exception as ex:
-            print(ex)
+            LOGGER(__name__).exception("group cleanup failed: %s", ex)
 
 
 async def _refresh_link(update, member):
@@ -154,4 +174,4 @@ async def bot_membership_changed(client, update):
         elif now_in:
             await _refresh_link(update, new)
     except Exception as ex:
-        print(ex)
+        LOGGER(__name__).exception("group member update failed: %s", ex)
