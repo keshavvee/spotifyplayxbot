@@ -3,6 +3,7 @@ import html
 import importlib
 import logging
 import queue
+import sys
 import threading
 import traceback
 
