@@ -7,7 +7,7 @@ from pyrogram.errors import (
     UserAlreadyParticipant,
     UserNotParticipant,
 )
-from pyrogram.types import ChatPrivileges, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ShrutixMusic import YouTube, nand
 from ShrutixMusic.misc import SUDOERS
@@ -29,24 +29,20 @@ links = {}
 
 
 async def _ensure_assistant_admin(chat_id, assistant):
+    assistant_id = getattr(assistant, "id", None)
+    if not assistant_id:
+        assistant_id = getattr(getattr(assistant, "me", None), "id", None)
+    if not assistant_id:
+        return False
     try:
-        member = await nand.get_chat_member(chat_id, assistant.id)
+        member = await nand.get_chat_member(chat_id, assistant_id)
     except (ChatAdminRequired, UserNotParticipant):
         return False
-    if member.status == ChatMemberStatus.OWNER:
-        return True
-    privileges = getattr(member, "privileges", None)
-    if member.status == ChatMemberStatus.ADMINISTRATOR and privileges and privileges.can_manage_video_chats:
-        return True
-    try:
-        await nand.promote_chat_member(
-            chat_id,
-            assistant.id,
-            privileges=ChatPrivileges(can_manage_video_chats=True),
-        )
-        return True
-    except Exception:
+    status = getattr(member, "status", None)
+    status_name = str(status).rsplit(".", 1)[-1].lower()
+    if status_name in ("banned", "restricted", "left"):
         return False
+    return status_name in ("owner", "creator", "administrator", "member")
 
 
 def PlayWrapper(command):
@@ -219,9 +215,8 @@ def PlayWrapper(command):
 
             if not await _ensure_assistant_admin(chat_id, userbot):
                 return await message.reply_text(
-                    "» ᴀssɪsᴛᴀɴᴛ ɪs ɴᴏᴛ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪs ᴄʜᴀᴛ.\n\n"
-                    f"ᴀᴅᴅ <b>{userbot.name}</b> ᴀs ᴀᴅᴍɪɴ ᴡɪᴛʜ "
-                    "<b>ᴍᴀɴᴀɢᴇ ᴠɪᴅᴇᴏ ᴄʜᴀᴛs</b>, ᴛʜᴇɴ ᴛʀʏ ᴀɢᴀɪɴ."
+                    "» ᴀssɪsᴛᴀɴᴛ ɪs ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ ɪɴ ᴛʜɪs ᴄʜᴀᴛ.\n\n"
+                    f"ᴀᴅᴅ <b>{userbot.name}</b> ᴛᴏ ᴛʜɪs ᴄʜᴀᴛ, ᴛʜᴇɴ ᴛʀʏ ᴀɢᴀɪɴ."
                 )
 
         return await command(

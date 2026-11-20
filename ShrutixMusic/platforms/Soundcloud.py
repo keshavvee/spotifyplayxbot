@@ -49,16 +49,16 @@ class SoundAPI:
         try:
             info = await asyncio.to_thread(self._extract_sync, url, False)
         except Exception:
-            return False
+            return False, None
         direct = info.get("url") if info else None
         if not direct:
-            return False
+            return False, None
         return self._track_details(info, direct), direct
 
     async def download(self, url):
         try:
             info = await asyncio.to_thread(self._extract_sync, url, True)
         except Exception:
-            return False
+            return False, None
         xyz = path.join("downloads", f"{info['id']}.{info['ext']}")
         return self._track_details(info, xyz), xyz
