@@ -16,6 +16,7 @@ from pytgcalls import PyTgCalls, StreamType
 from pytgcalls.exceptions import (
     AlreadyJoinedError,
     NoActiveGroupCall,
+    UnMuteNeeded,
 )
 from pytgcalls.types import (
     AudioPiped,
@@ -316,10 +317,22 @@ class Call(PyTgCalls):
         if not await self._has_active_call(assistant, chat_id):
             raise AssistantErr(_["call_8"])
         try:
-            await assistant.join_group_call(
-                chat_id,
-                stream,
-            )
+            try:
+                await assistant.join_group_call(
+                    chat_id,
+                    stream,
+                )
+            except UnMuteNeeded:
+                # Telegram can leave the userbot muted in a call. Unmute
+                # first, then retry the same join.
+                try:
+                    await assistant.unmute_stream(chat_id)
+                except Exception:
+                    pass
+                await assistant.join_group_call(
+                    chat_id,
+                    stream,
+                )
         except (NoActiveGroupCall, ChatAdminRequired):
             raise AssistantErr(_["call_8"])
         except AlreadyJoinedError:
@@ -348,6 +361,17 @@ class Call(PyTgCalls):
                     return True
                 except AlreadyJoinedError:
                     return True
+                except UnMuteNeeded:
+                    try:
+                        await client.unmute_stream(chat_id)
+                    except Exception:
+                        pass
+                    try:
+                        await client.change_stream(chat_id, stream)
+                        return True
+                    except Exception as exc:
+                        last_exc = exc
+                        await asyncio.sleep(0.5 * (attempt + 1))
                 except Exception as exc:
                     last_exc = exc
                     await asyncio.sleep(0.5 * (attempt + 1))
