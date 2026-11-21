@@ -1,14 +1,16 @@
 import asyncio
 import os
+import random
 import wave
 from datetime import datetime, timedelta
 from typing import Union
 
 from pyrogram import Client
+from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import ChatAdminRequired
 from pyrogram.raw.functions.channels import GetFullChannel
 from pyrogram.raw.functions.messages import GetFullChat
-from pyrogram.raw.functions.phone import EditGroupCallTitle
+from pyrogram.raw.functions.phone import CreateGroupCall, EditGroupCallTitle
 from pyrogram.raw.types import InputChannel, InputPeerChannel, InputPeerChat
 from pytgcalls import PyTgCalls, StreamType
 from pytgcalls.exceptions import (
@@ -61,6 +63,12 @@ async def _clear_(chat_id):
 
 
 PLACEHOLDER_SECONDS = 120
+
+VOICE_PERMISSION_MESSAGE = (
+    "I can't start the voice chat because the assistant is missing a required permission.\n\n"
+    "Please make the bot and the assistant administrators with "
+    "<b>Manage Video Chats</b> and <b>Invite Users</b>, then try /play again."
+)
 
 _video_placeholder_lock = asyncio.Lock()
 
@@ -247,6 +255,63 @@ class Call(PyTgCalls):
             # assistant to create a call: that is a guaranteed admin error.
             return False
 
+    async def ensure_call(self, chat_id: int, assistant=None):
+        if assistant is None:
+            assistant = await group_assistant(self, chat_id)
+        if await self._has_active_call(assistant, chat_id):
+            return assistant
+
+        client = self._assistant_client(assistant)
+        if client is None:
+            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+        try:
+            member = await client.get_chat_member(chat_id, client.me.id)
+        except Exception as exc:
+            LOGGER(__name__).warning(
+                "assistant permission check failed in %s: %s: %s",
+                chat_id,
+                type(exc).__name__,
+                exc,
+            )
+            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+
+        status = getattr(member, "status", None)
+        allowed = status == ChatMemberStatus.OWNER
+        if status == ChatMemberStatus.ADMINISTRATOR:
+            privileges = getattr(member, "privileges", None)
+            allowed = bool(getattr(privileges, "can_manage_video_chats", False))
+        if not allowed:
+            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+
+        peer = await client.resolve_peer(chat_id)
+        try:
+            await client.invoke(
+                CreateGroupCall(
+                    peer=peer,
+                    random_id=random.randint(1, 2**31 - 1),
+                    title=config.VC_TITLE,
+                )
+            )
+        except ChatAdminRequired:
+            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+        except Exception as exc:
+            LOGGER(__name__).warning(
+                "start voice chat failed in %s: %s: %s",
+                chat_id,
+                type(exc).__name__,
+                exc,
+            )
+            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+
+        for _ in range(10):
+            await asyncio.sleep(0.3)
+            if await self._has_active_call(assistant, chat_id):
+                await self._set_vc_title(assistant, chat_id)
+                return assistant
+        raise AssistantErr(
+            "The voice chat did not become ready. Please try /play again in a moment."
+        )
+
     async def _assistant_join(self, assistant, chat_id: int, stream, _):
         if not await self._has_active_call(assistant, chat_id):
             raise AssistantErr(_["call_8"])
@@ -339,6 +404,7 @@ class Call(PyTgCalls):
         else:
             stream = AudioPiped(_silence_path(), audio_parameters=HighQualityAudio())
         self._prejoin_video[chat_id] = used_video
+        await self.ensure_call(chat_id, assistant)
         await self._assistant_join(assistant, chat_id, stream, _)
 
     async def prejoin_start(self, chat_id: int, video: bool = False) -> bool:
@@ -565,6 +631,7 @@ class Call(PyTgCalls):
         assistant = await group_assistant(self, chat_id)
         language = await get_lang(chat_id)
         _ = get_string(language)
+        await self.ensure_call(chat_id, assistant)
         if video:
             stream = AudioVideoPiped(
                 link,

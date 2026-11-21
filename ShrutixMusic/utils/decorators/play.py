@@ -215,8 +215,9 @@ def PlayWrapper(command):
 
             if not await _ensure_assistant_admin(chat_id, userbot):
                 return await message.reply_text(
-                    "» ᴀssɪsᴛᴀɴᴛ ɪs ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ ɪɴ ᴛʜɪs ᴄʜᴀᴛ.\n\n"
-                    f"ᴀᴅᴅ <b>{userbot.name}</b> ᴛᴏ ᴛʜɪs ᴄʜᴀᴛ, ᴛʜᴇɴ ᴛʀʏ ᴀɢᴀɪɴ."
+                    "I can’t start playback because the assistant account is not available in this chat.\n\n"
+                    f"Please add <b>{userbot.name}</b> to this chat, or grant it "
+                    "<b>Invite Users</b> permission, then try /play again."
                 )
 
         return await command(

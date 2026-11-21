@@ -81,6 +81,18 @@ async def auto_end():
                 if listeners > 1:
                     autoend[chat_id] = datetime.now() + timedelta(minutes=1)
                     continue
+                # Confirm once more after a short grace period. This avoids
+                # evicting a listener who joined while the old timer expired.
+                await asyncio.sleep(2)
+                try:
+                    participants = await assistant.get_participants(chat_id)
+                    listeners = len(participants)
+                except Exception:
+                    autoend[chat_id] = datetime.now() + timedelta(minutes=1)
+                    continue
+                if listeners > 1:
+                    autoend[chat_id] = datetime.now() + timedelta(minutes=1)
+                    continue
                 autoend[chat_id] = {}
                 try:
                     await Shruti.stop_stream(chat_id)
@@ -89,7 +101,10 @@ async def auto_end():
                 try:
                     await nand.send_message(
                         chat_id,
-                        "» ʙᴏᴛ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ʟᴇғᴛ ᴠɪᴅᴇᴏᴄʜᴀᴛ ʙᴇᴄᴀᴜsᴇ ɴᴏ ᴏɴᴇ ᴡᴀs ʟɪsᴛᴇɴɪɴɢ ᴏɴ ᴠɪᴅᴇᴏᴄʜᴀᴛ.",
+                        "» Playback stopped because no active listeners were detected. "
+                        "If you were listening, please make the bot and assistant "
+                        "administrators with Manage Video Chats and Invite Users "
+                        "permissions, then run /play again.",
                     )
                 except:
                     continue
