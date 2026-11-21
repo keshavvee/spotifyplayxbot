@@ -361,7 +361,10 @@ async def add_active_chat(chat_id: int):
 
 async def remove_active_chat(chat_id: int):
     if chat_id in active:
-        active.remove(chat_id)
+        try:
+            active.remove(chat_id)
+        except ValueError:
+            pass
 
 
 async def get_active_video_chats() -> list:
@@ -382,7 +385,10 @@ async def add_active_video_chat(chat_id: int):
 
 async def remove_active_video_chat(chat_id: int):
     if chat_id in activevideo:
-        activevideo.remove(chat_id)
+        try:
+            activevideo.remove(chat_id)
+        except ValueError:
+            pass
 
 
 async def check_nonadmin_chat(chat_id: int) -> bool:
@@ -514,13 +520,34 @@ async def remove_log_group():
 
 
 async def record_group_add(user_id: int, chat_id: int) -> int:
-    await groupaddsdb.update_one(
-        {"user_id": user_id},
-        {"$addToSet": {"chat_ids": chat_id}},
-        upsert=True,
-    )
-    data = await groupaddsdb.find_one({"user_id": user_id})
-    return len(data.get("chat_ids", [])) if data else 0
+    # One document per adder, one entry per distinct group.  This is the
+    # only group-add bookkeeping the bot needs; no per-add history is stored.
+    query = {"user_id": user_id}
+    try:
+        await groupaddsdb.update_one(
+            query,
+            {
+                "$setOnInsert": {"user_id": user_id},
+                "$addToSet": {"chat_ids": chat_id},
+            },
+            upsert=True,
+        )
+    except Exception:
+        # Repair older documents whose chat_ids field is not an array.
+        current = await groupaddsdb.find_one(query) or {}
+        ids = current.get("chat_ids", [])
+        if not isinstance(ids, list):
+            ids = []
+        if chat_id not in ids:
+            ids.append(chat_id)
+        await groupaddsdb.update_one(
+            query,
+            {"$set": {"user_id": user_id, "chat_ids": ids}},
+            upsert=True,
+        )
+    data = await groupaddsdb.find_one(query)
+    ids = data.get("chat_ids", []) if data else []
+    return len({x for x in ids if isinstance(x, int)})
 
 
 async def get_served_chats() -> list:
@@ -723,3 +750,53 @@ async def remove_banned_user(user_id: int):
     if not is_gbanned:
         return
     return await blockeddb.delete_one({"user_id": user_id})
+
+
+
+async def compact_database():
+    """Keep the database to ID lists and small settings.
+
+    This is deliberately idempotent: it only removes duplicate ID rows,
+    normalises the per-user group-add list, and creates lookup indexes.
+    No play history, playlist rows, or log rows are ever persisted.
+    """
+    id_collections = (
+        (usersdb, "user_id"),
+        (chatsdb, "chat_id"),
+        (gbansdb, "user_id"),
+        (blockeddb, "user_id"),
+        (groupaddsdb, "user_id"),
+    )
+    for collection, field in id_collections:
+        try:
+            seen = set()
+            async for doc in collection.find({}, {field: 1}):
+                value = doc.get(field)
+                if value is None:
+                    continue
+                if value in seen:
+                    await collection.delete_one({"_id": doc["_id"]})
+                else:
+                    seen.add(value)
+            await collection.create_index(field)
+        except Exception:
+            continue
+
+    try:
+        async for doc in groupaddsdb.find({}):
+            raw_ids = doc.get("chat_ids", [])
+            ids = sorted({int(x) for x in raw_ids if isinstance(x, int)}) if isinstance(raw_ids, list) else []
+            await groupaddsdb.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {"user_id": doc.get("user_id"), "chat_ids": ids}},
+            )
+    except Exception:
+        pass
+
+    # These were never part of the ID-only schema; drop them if an old
+    # deployment left them behind.
+    for obsolete in ("logs", "playlist", "playlists", "history", "stream_history"):
+        try:
+            await mongodb.drop_collection(obsolete)
+        except Exception:
+            pass

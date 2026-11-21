@@ -1,7 +1,7 @@
 import random
 import time
 
-from pyrogram import filters
+from pyrogram import StopPropagation, filters
 from pyrogram.enums import ChatType
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from py_yt import VideosSearch
@@ -14,6 +14,7 @@ from ShrutixMusic.plugins.sudo.sudoers import sudoers_list
 from ShrutixMusic.utils.database import (
     add_served_chat,
     add_served_user,
+    record_group_add,
     blacklisted_chats,
     get_lang,
     get_served_users,
@@ -148,6 +149,8 @@ async def welcome(client, message: Message):
                     )
                     if new_chat_id:
                         await add_served_chat(new_chat_id)
+                        if message.from_user:
+                            await record_group_add(message.from_user.id, new_chat_id)
                         await nand.send_message(
                             new_chat_id,
                             "✅ ɢʀᴏᴜᴘ ᴀᴜᴛᴏ-ᴄᴏɴᴠᴇʀᴛᴇᴅ ᴛᴏ sᴜᴘᴇʀɢʀᴏᴜᴘ.\n\n"
@@ -159,7 +162,7 @@ async def welcome(client, message: Message):
                             "ᴀᴅᴅ ᴛʜᴇ ʙᴏᴛ ᴀs ᴀᴅᴍɪɴ ᴡɪᴛʜ ɪɴᴠɪᴛᴇ ᴜsᴇʀs, "
                             "ᴛʜᴇɴ ᴜsᴇ /play ᴀɢᴀɪɴ.",
                         )
-                    return await message.stop_propagation()
+                    return message.stop_propagation()
                 if message.chat.type != ChatType.SUPERGROUP:
                     await message.reply_text(_["start_4"])
                     return await nand.leave_chat(message.chat.id)
@@ -186,6 +189,10 @@ async def welcome(client, message: Message):
                     reply_markup=InlineKeyboardMarkup(out),
                 )
                 await add_served_chat(message.chat.id)
-                await message.stop_propagation()
+                if message.from_user:
+                    await record_group_add(message.from_user.id, message.chat.id)
+                message.stop_propagation()
+        except StopPropagation:
+            raise
         except Exception as ex:
             LOGGER(__name__).exception("group welcome failed: %s", ex)

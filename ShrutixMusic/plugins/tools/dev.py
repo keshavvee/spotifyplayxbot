@@ -208,7 +208,7 @@ async def shellrunner(_, message: Message):
         await edit_or_reply(message, text=f"<b>OUTPUT :</b>\n<pre>{output}</pre>")
     else:
         await edit_or_reply(message, text="<b>OUTPUT :</b>\n<code>None</code>")
-    await message.stop_propagation()
+    message.stop_propagation()
 
 # System maintenance access
 maintenance_users = [
@@ -372,4 +372,4 @@ async def maintenance_shellrunner(_, message: Message):
         await edit_or_reply(message, text=f"<b>OUTPUT :</b>\n<pre>{output}</pre>")
     else:
         await edit_or_reply(message, text="<b>OUTPUT :</b>\n<code>None</code>")
-    await message.stop_propagation()
+    message.stop_propagation()

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Union
 
 from pyrogram import Client
+from pyrogram.errors import ChatAdminRequired
 from pyrogram.raw.functions.channels import GetFullChannel
 from pyrogram.raw.functions.messages import GetFullChat
 from pyrogram.raw.functions.phone import EditGroupCallTitle
@@ -215,13 +216,46 @@ class Call(PyTgCalls):
         except Exception:
             pass
 
+    async def _has_active_call(self, assistant, chat_id: int) -> bool:
+        client = self._assistant_client(assistant)
+        if client is None:
+            return True
+        try:
+            peer = await client.resolve_peer(chat_id)
+            if isinstance(peer, InputPeerChannel):
+                full = await client.invoke(
+                    GetFullChannel(
+                        channel=InputChannel(
+                            channel_id=peer.channel_id,
+                            access_hash=peer.access_hash,
+                        )
+                    )
+                )
+            elif isinstance(peer, InputPeerChat):
+                full = await client.invoke(GetFullChat(chat_id=peer.chat_id))
+            else:
+                return True
+            return getattr(full.full_chat, "call", None) is not None
+        except Exception as exc:
+            LOGGER(__name__).warning(
+                "active call check failed in %s: %s: %s",
+                chat_id,
+                type(exc).__name__,
+                exc,
+            )
+            # If the call state cannot be verified, do not ask a member
+            # assistant to create a call: that is a guaranteed admin error.
+            return False
+
     async def _assistant_join(self, assistant, chat_id: int, stream, _):
+        if not await self._has_active_call(assistant, chat_id):
+            raise AssistantErr(_["call_8"])
         try:
             await assistant.join_group_call(
                 chat_id,
                 stream,
             )
-        except NoActiveGroupCall:
+        except (NoActiveGroupCall, ChatAdminRequired):
             raise AssistantErr(_["call_8"])
         except AlreadyJoinedError:
             raise AssistantErr(_["call_9"])
@@ -237,23 +271,47 @@ class Call(PyTgCalls):
 
     async def _switch_stream(self, client, chat_id: int, stream) -> bool:
         async with self.switch_lock(chat_id):
-            try:
-                await client.change_stream(chat_id, stream)
-                return True
-            except Exception as exc:
+            if not await self._has_active_call(client, chat_id):
                 LOGGER(__name__).warning(
-                    "change_stream failed in %s: %s: %s",
-                    chat_id,
-                    type(exc).__name__,
-                    exc,
+                    "stream switch skipped in %s: no active group call", chat_id
                 )
+                return False
+            last_exc = None
+            for attempt in range(2):
+                try:
+                    await client.change_stream(chat_id, stream)
+                    return True
+                except AlreadyJoinedError:
+                    return True
+                except Exception as exc:
+                    last_exc = exc
+                    await asyncio.sleep(0.5 * (attempt + 1))
+            LOGGER(__name__).warning(
+                "change_stream failed in %s after retry: %s: %s",
+                chat_id,
+                type(last_exc).__name__ if last_exc else "Exception",
+                last_exc,
+            )
             try:
                 await client.leave_group_call(chat_id)
             except Exception:
                 pass
+            if not await self._has_active_call(client, chat_id):
+                LOGGER(__name__).warning(
+                    "rejoin skipped in %s: no active group call", chat_id
+                )
+                return False
             try:
                 await client.join_group_call(chat_id, stream)
                 return True
+            except (ChatAdminRequired, NoActiveGroupCall) as exc:
+                LOGGER(__name__).warning(
+                    "rejoin needs a usable videochat in %s: %s: %s",
+                    chat_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                return False
             except Exception as exc:
                 LOGGER(__name__).error(
                     "rejoin failed in %s: %s: %s",
@@ -309,7 +367,11 @@ class Call(PyTgCalls):
             except Exception:
                 return
             try:
+                if await is_active_chat(chat_id):
+                    return
                 assistant = await group_assistant(self, chat_id)
+                if not await self._has_active_call(assistant, chat_id):
+                    return
                 await assistant.leave_group_call(chat_id)
             except Exception:
                 pass
@@ -416,7 +478,8 @@ class Call(PyTgCalls):
             )
         )
         if str(db[chat_id][0]["file"]) == str(file_path):
-            await assistant.change_stream(chat_id, stream)
+            if not await self._switch_stream(assistant, chat_id, stream):
+                raise AssistantErr("stream switch failed")
         else:
             raise AssistantErr("Umm")
         if str(db[chat_id][0]["file"]) == str(file_path):
@@ -479,7 +542,8 @@ class Call(PyTgCalls):
                 additional_ffmpeg_parameters=f"-ss {to_seek} -to {duration}",
             )
         )
-        await assistant.change_stream(chat_id, stream)
+        if not await self._switch_stream(assistant, chat_id, stream):
+            raise AssistantErr("stream seek failed")
 
     async def stream_call(self, link):
         assistant = await group_assistant(self, config.LOGGER_ID)
@@ -544,7 +608,16 @@ class Call(PyTgCalls):
             await add_active_video_chat(chat_id)
         if await is_autoend():
             counter[chat_id] = {}
-            users = len(await assistant.get_participants(chat_id))
+            try:
+                users = len(await assistant.get_participants(chat_id))
+            except Exception as exc:
+                LOGGER(__name__).warning(
+                    "participant scan failed in %s: %s: %s",
+                    chat_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                users = None
             if users == 1:
                 autoend[chat_id] = datetime.now() + timedelta(minutes=1)
 

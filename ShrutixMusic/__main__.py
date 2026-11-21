@@ -24,7 +24,7 @@ from ShrutixMusic.core.call import Shruti
 from ShrutixMusic.logging import enqueue_error
 from ShrutixMusic.misc import sudo
 from ShrutixMusic.plugins import ALL_MODULES
-from ShrutixMusic.utils.database import get_banned_users, get_gbanned
+from ShrutixMusic.utils.database import compact_database, get_banned_users, get_gbanned
 from config import BANNED_USERS
 
 
@@ -126,6 +126,10 @@ async def init():
         LOGGER(__name__).error("Assistant client variables not defined, exiting...")
         exit()
     await sudo()
+    try:
+        await compact_database()
+    except Exception:
+        pass
     try:
         users = await get_gbanned()
         for user_id in users:
