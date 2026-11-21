@@ -66,9 +66,9 @@ async def _clear_(chat_id):
 PLACEHOLDER_SECONDS = 120
 
 VOICE_PERMISSION_MESSAGE = (
-    "I can't start the voice chat because the assistant is missing a required permission.\n\n"
-    "Please make the bot and the assistant administrators with "
-    "<b>Manage Video Chats</b> and <b>Invite Users</b>, then try /play again."
+    "I can't start the voice chat because the bot is missing a required permission.\n\n"
+    "Please promote the bot to administrator with <b>Manage Video Chats</b>, "
+    "then try /play again. The assistant only needs to be a member of this group."
 )
 
 _video_placeholder_lock = asyncio.Lock()
@@ -252,8 +252,8 @@ class Call(PyTgCalls):
                 type(exc).__name__,
                 exc,
             )
-            # If the call state cannot be verified, do not ask a member
-            # assistant to create a call: that is a guaranteed admin error.
+            # If the call state cannot be verified, do not create a call
+            # blindly: a duplicate CreateGroupCall fails hard.
             return False
 
     async def ensure_call(self, chat_id: int, assistant=None):
@@ -262,6 +262,10 @@ class Call(PyTgCalls):
         if await self._has_active_call(assistant, chat_id):
             return assistant
 
+        # Only the bot needs chat-admin rights to create the call.
+        # Assistant accounts stream as ordinary members.
+        await self._require_bot_vc_rights(chat_id)
+
         client = self._assistant_client(assistant)
         if client is None:
             raise AssistantErr(VOICE_PERMISSION_MESSAGE)
@@ -269,24 +273,26 @@ class Call(PyTgCalls):
             member = await client.get_chat_member(chat_id, client.me.id)
         except Exception as exc:
             LOGGER(__name__).warning(
-                "assistant permission check failed in %s: %s: %s",
+                "assistant membership check failed in %s: %s: %s",
                 chat_id,
                 type(exc).__name__,
                 exc,
             )
-            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+            raise AssistantErr(
+                "I can't join the voice chat because the assistant account is not "
+                "a member of this group. Add the assistant back and try /play again."
+            )
 
         status = getattr(member, "status", None)
-        allowed = status == ChatMemberStatus.OWNER
-        if status == ChatMemberStatus.ADMINISTRATOR:
-            privileges = getattr(member, "privileges", None)
-            allowed = bool(getattr(privileges, "can_manage_video_chats", False))
-        if not allowed:
-            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+        if status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+            raise AssistantErr(
+                "I can't join the voice chat because the assistant account is not "
+                "a member of this group. Add the assistant back and try /play again."
+            )
 
-        peer = await client.resolve_peer(chat_id)
+        peer = await nand.resolve_peer(chat_id)
         try:
-            await client.invoke(
+            await nand.invoke(
                 CreateGroupCall(
                     peer=peer,
                     random_id=random.randint(1, 2**31 - 1),
@@ -312,6 +318,25 @@ class Call(PyTgCalls):
         raise AssistantErr(
             "The voice chat did not become ready. Please try /play again in a moment."
         )
+
+    async def _require_bot_vc_rights(self, chat_id: int) -> None:
+        try:
+            member = await nand.get_chat_member(chat_id, nand.me.id)
+        except Exception as exc:
+            LOGGER(__name__).warning(
+                "bot permission check failed in %s: %s: %s",
+                chat_id,
+                type(exc).__name__,
+                exc,
+            )
+            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
+        status = getattr(member, "status", None)
+        allowed = status == ChatMemberStatus.OWNER
+        if status == ChatMemberStatus.ADMINISTRATOR:
+            privileges = getattr(member, "privileges", None)
+            allowed = bool(getattr(privileges, "can_manage_video_chats", False))
+        if not allowed:
+            raise AssistantErr(VOICE_PERMISSION_MESSAGE)
 
     async def _assistant_join(self, assistant, chat_id: int, stream, _):
         if not await self._has_active_call(assistant, chat_id):

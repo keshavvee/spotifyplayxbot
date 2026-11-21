@@ -101,10 +101,9 @@ async def auto_end():
                 try:
                     await nand.send_message(
                         chat_id,
-                        "» Playback stopped because no active listeners were detected. "
-                        "If you were listening, please make the bot and assistant "
-                        "administrators with Manage Video Chats and Invite Users "
-                        "permissions, then run /play again.",
+                        "» Playback stopped because no active listeners were detected.\n\n"
+                        "If you were listening, run /play again — the bot starts the "
+                        "voice chat itself when it has <b>Manage Video Chats</b>.",
                     )
                 except:
                     continue

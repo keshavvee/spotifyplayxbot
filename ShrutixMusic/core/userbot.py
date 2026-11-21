@@ -93,7 +93,7 @@ class Userbot(Client):
                         "Make sure:\n"
                         "1. LOGGER_ID is correct\n"
                         "2. Assistant account is added to the log group\n"
-                        "3. Assistant is promoted as admin in log group\n"
+                        "3. Assistant account is added as a member of the log group\n"
                         "4. Group privacy settings allow bots to send messages"
                     )
                     exit()

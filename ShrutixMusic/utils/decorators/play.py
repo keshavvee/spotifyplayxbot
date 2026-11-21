@@ -28,7 +28,8 @@ from strings import get_string
 links = {}
 
 
-async def _ensure_assistant_admin(chat_id, assistant):
+async def _ensure_assistant_present(chat_id, assistant):
+    """Assistant only needs ordinary membership; it never needs admin rights."""
     assistant_id = getattr(assistant, "id", None)
     if not assistant_id:
         assistant_id = getattr(getattr(assistant, "me", None), "id", None)
@@ -57,9 +58,9 @@ def PlayWrapper(command):
                 )
             else:
                 await message.reply_text(
-                    "» ɢʀᴏᴜᴘ ᴀᴜᴛᴏ-ᴄᴏɴᴠᴇʀsɪᴏɴ ғᴀɪʟᴇᴅ.\n\n"
-                    "ᴀᴅᴅ ᴛʜᴇ ʙᴏᴛ ᴀs ᴀᴅᴍɪɴ ᴡɪᴛʜ ɪɴᴠɪᴛᴇ ᴜsᴇʀs, "
-                    "ᴛʜᴇɴ ᴜsᴇ /play ᴀɢᴀɪɴ.",
+                    "» ɪ ᴄᴏᴜʟᴅɴ'ᴛ ᴜᴘɢʀᴀᴅᴇ ᴛʜɪs ɢʀᴏᴜᴘ ᴛᴏ ᴀ sᴜᴘᴇʀɢʀᴏᴜᴘ.\n\n"
+                    "ᴛʜᴇ ʙᴏᴛ ɴᴇᴇᴅs ᴀᴅᴍɪɴ ʀɪɢʜᴛs ᴡɪᴛʜ <b>ɪɴᴠɪᴛᴇ ᴜsᴇʀs</b> "
+                    "ᴛᴏ ᴅᴏ ᴛʜᴀᴛ. ᴏɴᴄᴇ ɪᴛ ɪs ᴀᴅᴍɪɴ, ᴜsᴇ /play ᴀɢᴀɪɴ.",
                 )
             return
         language = await get_lang(message.chat.id)
@@ -213,11 +214,10 @@ def PlayWrapper(command):
                 except:
                     pass
 
-            if not await _ensure_assistant_admin(chat_id, userbot):
+            if not await _ensure_assistant_present(chat_id, userbot):
                 return await message.reply_text(
-                    "I can’t start playback because the assistant account is not available in this chat.\n\n"
-                    f"Please add <b>{userbot.name}</b> to this chat, or grant it "
-                    "<b>Invite Users</b> permission, then try /play again."
+                    "I can’t start playback because the assistant account is not in this chat.\n\n"
+                    f"Please add <b>{userbot.name}</b> to this group, then try /play again."
                 )
 
         return await command(

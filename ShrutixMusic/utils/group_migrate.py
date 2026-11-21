@@ -1,17 +1,7 @@
-from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import UserNotParticipant
 from pyrogram.raw.functions.messages import MigrateChat
-from pyrogram.types import ChatPrivileges
 
 from ShrutixMusic.logging import LOGGER
-
-
-def _is_admin(member) -> bool:
-    if member is None:
-        return False
-    if getattr(member, "status", None) == ChatMemberStatus.OWNER:
-        return True
-    return getattr(member, "status", None) == ChatMemberStatus.ADMINISTRATOR
 
 
 def _new_chat_id(updates):
@@ -30,46 +20,13 @@ def _new_chat_id(updates):
 
 
 async def migrate_basic_group(chat_id: int, bot):
-    from ShrutixMusic.utils.database import get_assistant
+    """Upgrade a basic group to a supergroup.
 
+    The bot performs the migration: only the bot holds admin rights, and the
+    assistant never needs anything beyond ordinary membership to stream.
+    """
     try:
-        assistant = await get_assistant(chat_id)
-    except Exception as exc:
-        LOGGER(__name__).warning("migration assistant lookup failed: %s", exc)
-        return None, "assistant"
-
-    try:
-        member = await assistant.get_chat_member(chat_id, assistant.id)
-    except UserNotParticipant:
-        try:
-            link = await bot.export_chat_invite_link(chat_id)
-            if link.startswith("https://t.me/+"):
-                link = link.replace("https://t.me/+", "https://t.me/joinchat/")
-            await assistant.join_chat(link)
-            member = await assistant.get_chat_member(chat_id, assistant.id)
-        except Exception as exc:
-            LOGGER(__name__).warning("migration assistant join failed: %s", exc)
-            return None, "assistant_join"
-    except Exception as exc:
-        LOGGER(__name__).warning("migration member lookup failed: %s", exc)
-        return None, "member"
-
-    if not _is_admin(member):
-        try:
-            await bot.promote_chat_member(
-                chat_id,
-                assistant.id,
-                privileges=ChatPrivileges(can_invite_users=True),
-            )
-            member = await assistant.get_chat_member(chat_id, assistant.id)
-        except Exception as exc:
-            LOGGER(__name__).warning("migration assistant promote failed: %s", exc)
-            return None, "assistant_admin"
-        if not _is_admin(member):
-            return None, "assistant_admin"
-
-    try:
-        updates = await assistant.invoke(MigrateChat(chat_id=chat_id))
+        updates = await bot.invoke(MigrateChat(chat_id=chat_id))
     except Exception as exc:
         LOGGER(__name__).warning("migration failed: %s", exc)
         return None, "migrate"
@@ -77,4 +34,22 @@ async def migrate_basic_group(chat_id: int, bot):
     new_id = _new_chat_id(updates)
     if not new_id:
         return None, "new_chat"
+
+    # Pull the assistant into the new supergroup so /play works immediately.
+    try:
+        from ShrutixMusic.utils.database import get_assistant
+
+        assistant = await get_assistant(new_id)
+        try:
+            member = await assistant.get_chat_member(new_id, assistant.id)
+        except UserNotParticipant:
+            member = None
+        if member is None:
+            link = await bot.export_chat_invite_link(new_id)
+            if link.startswith("https://t.me/+"):
+                link = link.replace("https://t.me/+", "https://t.me/joinchat/")
+            await assistant.join_chat(link)
+    except Exception as exc:
+        LOGGER(__name__).warning("assistant join after migration failed: %s", exc)
+
     return new_id, None
