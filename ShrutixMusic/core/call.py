@@ -170,6 +170,19 @@ class Call(PyTgCalls):
         self._prejoin_video = {}
         self._chat_locks = {}
         self._switch_locks = {}
+        self._joined = {}
+
+    def _mark_joined(self, assistant, chat_id: int):
+        self._joined[chat_id] = assistant
+
+    def _mark_left(self, chat_id: int):
+        self._joined.pop(chat_id, None)
+
+    def is_joined(self, chat_id: int) -> bool:
+        return chat_id in self._joined
+
+    def _joined_assistant(self, chat_id: int):
+        return self._joined.get(chat_id)
 
     def chat_lock(self, chat_id: int):
         lock = self._chat_locks.get(chat_id)
@@ -370,6 +383,7 @@ class Call(PyTgCalls):
                 exc,
             )
             raise AssistantErr(_["call_10"])
+        self._mark_joined(assistant, chat_id)
         await self._set_vc_title(assistant, chat_id)
 
     async def _switch_stream(self, client, chat_id: int, stream) -> bool:
@@ -383,8 +397,10 @@ class Call(PyTgCalls):
             for attempt in range(2):
                 try:
                     await client.change_stream(chat_id, stream)
+                    self._mark_joined(client, chat_id)
                     return True
                 except AlreadyJoinedError:
+                    self._mark_joined(client, chat_id)
                     return True
                 except UnMuteNeeded:
                     try:
@@ -393,6 +409,7 @@ class Call(PyTgCalls):
                         pass
                     try:
                         await client.change_stream(chat_id, stream)
+                        self._mark_joined(client, chat_id)
                         return True
                     except Exception as exc:
                         last_exc = exc
@@ -410,6 +427,7 @@ class Call(PyTgCalls):
                 await client.leave_group_call(chat_id)
             except Exception:
                 pass
+            self._mark_left(chat_id)
             if not await self._has_active_call(client, chat_id):
                 LOGGER(__name__).warning(
                     "rejoin skipped in %s: no active group call", chat_id
@@ -417,6 +435,7 @@ class Call(PyTgCalls):
                 return False
             try:
                 await client.join_group_call(chat_id, stream)
+                self._mark_joined(client, chat_id)
                 return True
             except (ChatAdminRequired, NoActiveGroupCall) as exc:
                 LOGGER(__name__).warning(
@@ -490,22 +509,59 @@ class Call(PyTgCalls):
                 await assistant.leave_group_call(chat_id)
             except Exception:
                 pass
+            finally:
+                self._mark_left(chat_id)
 
-    async def pause_stream(self, chat_id: int):
-        assistant = await group_assistant(self, chat_id)
-        await assistant.pause_stream(chat_id)
+    async def pause_stream(self, chat_id: int) -> bool:
+        assistant = self._joined_assistant(chat_id)
+        if assistant is None:
+            if not await is_active_chat(chat_id):
+                LOGGER(__name__).info(
+                    "pause skipped in %s: no active playback", chat_id
+                )
+                return False
+            assistant = await group_assistant(self, chat_id)
+        try:
+            await assistant.pause_stream(chat_id)
+            return True
+        except Exception as exc:
+            # PyTgCalls raises NotInGroupCallError when the call ended under us.
+            LOGGER(__name__).info(
+                "pause unavailable in %s: %s: %s", chat_id, type(exc).__name__, exc
+            )
+            self._mark_left(chat_id)
+            return False
 
-    async def resume_stream(self, chat_id: int):
-        assistant = await group_assistant(self, chat_id)
-        await assistant.resume_stream(chat_id)
+    async def resume_stream(self, chat_id: int) -> bool:
+        assistant = self._joined_assistant(chat_id)
+        if assistant is None:
+            if not await is_active_chat(chat_id):
+                LOGGER(__name__).info(
+                    "resume skipped in %s: no active playback", chat_id
+                )
+                return False
+            assistant = await group_assistant(self, chat_id)
+        try:
+            await assistant.resume_stream(chat_id)
+            return True
+        except Exception as exc:
+            LOGGER(__name__).info(
+                "resume unavailable in %s: %s: %s", chat_id, type(exc).__name__, exc
+            )
+            self._mark_left(chat_id)
+            return False
 
     async def stop_stream(self, chat_id: int):
         assistant = await group_assistant(self, chat_id)
         try:
             await _clear_(chat_id)
             await assistant.leave_group_call(chat_id)
-        except:
-            pass
+        except Exception as exc:
+            LOGGER(__name__).info(
+                "leave skipped in %s: %s: %s", chat_id, type(exc).__name__, exc
+            )
+        finally:
+            self._mark_left(chat_id)
 
     async def stop_stream_force(self, chat_id: int):
         try:
@@ -537,6 +593,7 @@ class Call(PyTgCalls):
             await _clear_(chat_id)
         except:
             pass
+        self._mark_left(chat_id)
 
     async def speedup_stream(self, chat_id: int, file_path, speed, playing):
         assistant = await group_assistant(self, chat_id)
@@ -619,8 +676,9 @@ class Call(PyTgCalls):
         await remove_active_chat(chat_id)
         try:
             await assistant.leave_group_call(chat_id)
-        except:
+        except Exception:
             pass
+        self._mark_left(chat_id)
 
     async def skip_stream(
         self,
@@ -712,6 +770,7 @@ class Call(PyTgCalls):
                         await assistant.leave_group_call(chat_id)
                     except Exception:
                         pass
+                    self._mark_left(chat_id)
         if not joined:
             try:
                 await self._assistant_join(assistant, chat_id, stream, _)
@@ -752,10 +811,12 @@ class Call(PyTgCalls):
                 if await try_autoplay(chat_id, popped):
                     return
                 await _clear_(chat_id)
+                self._mark_left(chat_id)
                 return await client.leave_group_call(chat_id)
         except:
             try:
                 await _clear_(chat_id)
+                self._mark_left(chat_id)
                 return await client.leave_group_call(chat_id)
             except:
                 return

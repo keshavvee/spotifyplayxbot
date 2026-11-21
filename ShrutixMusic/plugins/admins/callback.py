@@ -157,7 +157,12 @@ async def del_back_playlist(client, CallbackQuery, _):
             return await CallbackQuery.answer(_["admin_1"], show_alert=True)
         await CallbackQuery.answer()
         await music_off(chat_id)
-        await Shruti.pause_stream(chat_id)
+        if not await Shruti.pause_stream(chat_id):
+            await music_on(chat_id)
+            return await CallbackQuery.answer(
+                "» Playback is not connected to a voice chat right now.",
+                show_alert=True,
+            )
         await set_now_playing_state(chat_id, playing=False)
         await CallbackQuery.message.reply_text(
             _["admin_2"].format(mention), reply_markup=close_markup(_)
@@ -167,7 +172,12 @@ async def del_back_playlist(client, CallbackQuery, _):
             return await CallbackQuery.answer(_["admin_3"], show_alert=True)
         await CallbackQuery.answer()
         await music_on(chat_id)
-        await Shruti.resume_stream(chat_id)
+        if not await Shruti.resume_stream(chat_id):
+            await music_off(chat_id)
+            return await CallbackQuery.answer(
+                "» Playback is not connected to a voice chat right now.",
+                show_alert=True,
+            )
         await set_now_playing_state(chat_id, playing=True)
         await CallbackQuery.message.reply_text(
             _["admin_4"].format(mention), reply_markup=close_markup(_)

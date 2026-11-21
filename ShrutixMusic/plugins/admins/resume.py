@@ -16,7 +16,13 @@ async def resume_com(cli, message: Message, _, chat_id):
     if await is_music_playing(chat_id):
         return await message.reply_text(_["admin_3"])
     await music_on(chat_id)
-    await Shruti.resume_stream(chat_id)
+    resumed = await Shruti.resume_stream(chat_id)
+    if not resumed:
+        await music_off(chat_id)
+        return await message.reply_text(
+            "» Playback is not connected to a voice chat right now, so there "
+            "is nothing to resume. Use /play to start a track again.",
+        )
     await set_now_playing_state(chat_id, playing=True)
     await message.reply_text(
         _["admin_4"].format(message.from_user.mention), reply_markup=close_markup(_)
